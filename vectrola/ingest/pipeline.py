@@ -1,0 +1,408 @@
+"""Main ingestion pipeline orchestrating transcription, synthesis, and storage."""
+
+from pathlib import Path
+from dataclasses import dataclass, field
+from typing import Optional
+import json
+
+from vectrola.config import get_config
+from vectrola.ingest.transcribe import Transcriber, TranscriptionResult
+from vectrola.ingest.synthesis import Synthesizer, SynthesisResult
+from vectrola.ingest.lyrics import LyricsFetcher, LyricsResult
+from vectrola.ingest.spotify import SpotifyFetcher, SpotifyTrack
+from vectrola.storage.tags import write_tags, read_file_tags, FileTags
+
+
+@dataclass
+class TrackAnalysis:
+    """Complete analysis result for a track."""
+
+    file_path: Path
+
+    # Basic metadata
+    title: str
+    artists: list[str] = field(default_factory=list)  # Singers
+    album: str = ""
+    year: Optional[int] = None
+
+    # Bollywood specific
+    movie: str = ""  # Film name (often = album for soundtracks)
+    composer: str = ""  # Music director
+    lyricist: str = ""
+
+    # Lyrics
+    lyrics: str = ""
+    lyrics_source: str = ""  # "lrclib", "genius", "whisper", "file_tags"
+    segments: list[dict] = field(default_factory=list)
+    language: str = ""
+    duration_seconds: Optional[float] = None
+
+    # Semantic analysis (from Ollama)
+    themes: list[str] = field(default_factory=list)
+    moods: list[str] = field(default_factory=list)
+    narrative: str = ""
+    imagery: list[str] = field(default_factory=list)
+
+    # Acoustic features (populated in Day 2-3)
+    tempo: Optional[float] = None
+    key: Optional[str] = None
+    energy: Optional[float] = None
+
+    # Embeddings (populated in Day 2-3)
+    lyrics_vector: Optional[list[float]] = None
+    audio_vector: Optional[list[float]] = None
+
+    # Source tracking
+    metadata_source: str = ""  # "file_tags", "lrclib", "musicbrainz"
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary for storage."""
+        return {
+            "file_path": str(self.file_path),
+            "title": self.title,
+            "artists": self.artists,
+            "album": self.album,
+            "year": self.year,
+            "movie": self.movie,
+            "composer": self.composer,
+            "lyricist": self.lyricist,
+            "lyrics": self.lyrics,
+            "lyrics_source": self.lyrics_source,
+            "segments": self.segments,
+            "language": self.language,
+            "duration_seconds": self.duration_seconds,
+            "themes": self.themes,
+            "moods": self.moods,
+            "narrative": self.narrative,
+            "imagery": self.imagery,
+            "tempo": self.tempo,
+            "key": self.key,
+            "energy": self.energy,
+            "metadata_source": self.metadata_source,
+        }
+
+
+class IngestPipeline:
+    """
+    Main ingestion pipeline for processing audio tracks.
+
+    Pipeline priority:
+    1. Read existing file tags (if complete, use them)
+    2. Fetch lyrics from LRClib/Genius (fast, accurate, includes album/movie)
+    3. Optionally fetch composer/lyricist from MusicBrainz
+    4. Fallback to Whisper transcription (for obscure songs)
+    5. LLM synthesis for themes/moods
+    """
+
+    def __init__(self, use_stems: bool = False, genius_token: Optional[str] = None):
+        """
+        Initialize the ingestion pipeline.
+
+        Args:
+            use_stems: If True, use Demucs for vocal separation when using Whisper fallback.
+            genius_token: Optional Genius API token for lyrics fetching.
+        """
+        self.use_stems = use_stems
+        self.genius_token = genius_token
+        config = get_config()
+
+        # Lazy-loaded components
+        self._transcriber: Optional[Transcriber] = None
+        self._synthesizer: Optional[Synthesizer] = None
+        self._lyrics_fetcher: Optional[LyricsFetcher] = None
+        self._spotify_fetcher: Optional[SpotifyFetcher] = None
+
+    @property
+    def transcriber(self) -> Transcriber:
+        """Lazy load transcriber."""
+        if self._transcriber is None:
+            self._transcriber = Transcriber()
+        return self._transcriber
+
+    @property
+    def synthesizer(self) -> Synthesizer:
+        """Lazy load synthesizer."""
+        if self._synthesizer is None:
+            self._synthesizer = Synthesizer()
+        return self._synthesizer
+
+    @property
+    def lyrics_fetcher(self) -> LyricsFetcher:
+        """Lazy load lyrics fetcher."""
+        if self._lyrics_fetcher is None:
+            self._lyrics_fetcher = LyricsFetcher(genius_token=self.genius_token)
+        return self._lyrics_fetcher
+
+    @property
+    def spotify_fetcher(self) -> SpotifyFetcher:
+        """Lazy load Spotify fetcher."""
+        if self._spotify_fetcher is None:
+            self._spotify_fetcher = SpotifyFetcher()
+        return self._spotify_fetcher
+
+    @property
+    def metadata_fetcher(self):
+        """Lazy load MusicBrainz fetcher (fallback for composer/lyricist)."""
+        if not hasattr(self, '_metadata_fetcher') or self._metadata_fetcher is None:
+            from vectrola.ingest.metadata import MetadataFetcher
+            self._metadata_fetcher = MetadataFetcher(genius_token=self.genius_token)
+        return self._metadata_fetcher
+
+    def process_track(self, file_path: Path, write_file_tags: bool = True, verbose: bool = True) -> TrackAnalysis:
+        """
+        Process a single audio track through the full pipeline.
+
+        Pipeline:
+        1. Read file tags first - if complete, use them
+        2. Fetch metadata from Spotify (artist, album, year)
+        3. Fetch lyrics from LRClib (with artist from Spotify)
+        4. Fetch composer/lyricist from MusicBrainz (fallback)
+        5. Fallback to Whisper if no lyrics found
+        6. LLM synthesis for themes/moods/narrative
+
+        Args:
+            file_path: Path to the audio file
+            write_file_tags: Whether to write analysis back to file tags
+            verbose: Print progress messages
+
+        Returns:
+            TrackAnalysis with all extracted metadata
+        """
+        import sys
+
+        def log(msg: str):
+            if verbose:
+                print(f"\n   → {msg}", end="", flush=True)
+
+        file_path = Path(file_path)
+
+        # ===========================================
+        # 1. Read existing file tags
+        # ===========================================
+        log("Reading file tags...")
+        file_tags = read_file_tags(file_path)
+
+        title = file_tags.title or file_path.stem
+        artists = file_tags.artists or []
+        album = file_tags.album or ""
+        year = file_tags.year
+        composer = file_tags.composer or ""
+        movie = ""  # File tags typically don't have movie
+        lyricist = ""
+        metadata_source = "file_tags" if file_tags.has_metadata else ""
+
+        # ===========================================
+        # 2. Fetch metadata from Spotify FIRST (to get artist)
+        # ===========================================
+        log("Fetching metadata from Spotify...")
+        artist_str = artists[0] if artists else ""
+
+        spotify_track = self.spotify_fetcher.get_best_match(title, artist_str)
+        if spotify_track:
+            # Get artist from Spotify if we don't have one
+            if not artists and spotify_track.artists:
+                artists = spotify_track.artists
+                artist_str = artists[0]
+                log(f"Found: {spotify_track.title} by {artist_str}")
+            if not year and spotify_track.year:
+                year = spotify_track.year
+            if not album and spotify_track.album:
+                album = spotify_track.album
+                # For Bollywood, album is often the movie name
+                movie = spotify_track.album
+            metadata_source = "spotify"
+        else:
+            log("Not found on Spotify")
+
+        # ===========================================
+        # 3. Fetch lyrics from LRClib (now WITH artist from Spotify)
+        # ===========================================
+        log("Fetching lyrics from LRClib...")
+        lyrics_result: Optional[LyricsResult] = None
+
+        # Try with artist + title (artist from file tags OR Spotify)
+        if artist_str and artist_str.lower() not in ['unknown artist', 'unknown', 'various']:
+            lyrics_result = self.lyrics_fetcher.fetch(
+                artist=artist_str,
+                title=title,
+                audio_path=file_path,
+                use_whisper_fallback=False,
+            )
+
+        # If no artist or not found, try just title
+        if lyrics_result is None:
+            lyrics_result = self.lyrics_fetcher.fetch(
+                artist="",
+                title=title,
+                audio_path=file_path,
+                use_whisper_fallback=False,
+            )
+
+        # ===========================================
+        # 4. Use LRClib data to fill missing fields
+        # ===========================================
+        if lyrics_result:
+            lyrics = lyrics_result.text
+            lyrics_source = lyrics_result.source
+            segments = lyrics_result.segments or []
+            duration_seconds = lyrics_result.duration_seconds
+
+            # LRClib album is often the movie name for Bollywood
+            if not album and lyrics_result.album:
+                album = lyrics_result.album
+
+            # For Bollywood, album = movie
+            if lyrics_result.album:
+                movie = lyrics_result.album
+
+            # Update artists if we got better info from LRClib
+            if lyrics_result.artist and not artists:
+                artists = [lyrics_result.artist]
+
+            log(f"Found lyrics ({len(lyrics)} chars)")
+        else:
+            lyrics = ""
+            lyrics_source = ""
+            segments = []
+            duration_seconds = None
+            log("No lyrics found online")
+
+        # ===========================================
+        # 5. Fallback to Whisper transcription if no lyrics
+        # ===========================================
+        if not lyrics:
+            log("Transcribing with Whisper (fallback)...")
+            transcription = self.transcriber.transcribe(file_path)
+            lyrics = transcription.text
+            lyrics_source = "whisper"
+            segments = transcription.segments
+
+        # Detect language
+        if lyrics:
+            language = self._detect_language(lyrics)
+        else:
+            language = ""
+
+        # ===========================================
+        # 6. Fetch composer/lyricist from MusicBrainz (if missing)
+        # ===========================================
+        if not composer or not lyricist:
+            log("Fetching composer/lyricist from MusicBrainz...")
+            try:
+                mb_metadata = self.metadata_fetcher.fetch(title, artist_str)
+                if mb_metadata:
+                    if not composer and mb_metadata.composer:
+                        composer = mb_metadata.composer
+                    if not lyricist and mb_metadata.lyricist:
+                        lyricist = mb_metadata.lyricist
+            except Exception as e:
+                log(f"MusicBrainz error: {e}")
+
+        # ===========================================
+        # 7. LLM synthesis (themes, mood, narrative)
+        # ===========================================
+        if lyrics:
+            log("Running Ollama LLM synthesis...")
+            synthesis = self.synthesizer.synthesize(lyrics)
+            themes = synthesis.themes
+            moods = synthesis.moods
+            narrative = synthesis.narrative
+            imagery = synthesis.imagery
+            log(f"Got {len(moods)} moods, {len(themes)} themes")
+        else:
+            log("Skipping synthesis (no lyrics)")
+            themes = []
+            moods = []
+            narrative = ""
+            imagery = []
+
+        # ===========================================
+        # 7. Build analysis result
+        # ===========================================
+        log("Building analysis...")
+        analysis = TrackAnalysis(
+            file_path=file_path,
+            title=title,
+            artists=artists,
+            album=album,
+            year=year,
+            movie=movie,
+            composer=composer,
+            lyricist=lyricist,
+            lyrics=lyrics,
+            lyrics_source=lyrics_source,
+            segments=segments,
+            language=language,
+            duration_seconds=duration_seconds,
+            themes=themes,
+            moods=moods,
+            narrative=narrative,
+            imagery=imagery,
+            metadata_source=metadata_source,
+        )
+
+        # ===========================================
+        # 8. Generate lyrics embedding and store in Qdrant
+        # ===========================================
+        log("Generating embeddings & storing in Qdrant...")
+        try:
+            from vectrola.ingest.embeddings import get_text_embedder, build_searchable_text
+            from vectrola.storage.qdrant import get_db
+
+            # Build searchable text with weighted moods + synonyms
+            searchable_text = build_searchable_text(lyrics, moods, themes, narrative)
+
+            # Generate embedding from combined text
+            embedder = get_text_embedder()
+            lyrics_vector = embedder.embed(searchable_text) if searchable_text else None
+
+            if lyrics_vector:
+                analysis.lyrics_vector = lyrics_vector
+
+                # Store in Qdrant
+                db = get_db()
+                db.upsert_track(
+                    file_path=str(file_path),
+                    lyrics_vector=lyrics_vector,
+                    payload=analysis.to_dict(),
+                )
+        except Exception as e:
+            # Don't fail the whole pipeline if Qdrant is unavailable
+            log(f"Warning: Qdrant error: {e}")
+
+        # ===========================================
+        # 9. Write tags to file
+        # ===========================================
+        if write_file_tags:
+            log("Writing tags to file...")
+            write_tags(file_path, analysis.to_dict())
+
+        if verbose:
+            print()  # Newline after all the → logs
+
+        return analysis
+
+    def _detect_language(self, text: str) -> str:
+        """Detect language from text sample."""
+        sample = text[:200]
+        # Check for Devanagari script (Hindi)
+        if any(0x0900 <= ord(c) <= 0x097F for c in sample):
+            return "hi"
+        # Default to English
+        return "en"
+
+
+# Convenience function for simple usage
+def ingest_track(file_path: Path, fast: bool = True) -> TrackAnalysis:
+    """
+    Ingest a single track with default settings.
+
+    Args:
+        file_path: Path to the audio file
+        fast: If True, skip Demucs stem separation
+
+    Returns:
+        TrackAnalysis with extracted metadata
+    """
+    pipeline = IngestPipeline(use_stems=not fast)
+    return pipeline.process_track(file_path)
