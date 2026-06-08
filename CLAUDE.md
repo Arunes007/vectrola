@@ -35,9 +35,12 @@ vectrola/
 │   │   └── pipeline.py     # Orchestration
 │   ├── storage/
 │   │   ├── tags.py         # Audio file tags
-│   │   └── qdrant.py       # Vector database
-│   └── search/
-│       └── semantic.py     # Semantic search
+│   │   ├── qdrant.py       # Vector database
+│   │   └── wiki.py         # Obsidian wiki generator
+│   ├── search/
+│   │   └── semantic.py     # Semantic search
+│   └── mcp/
+│       └── server.py       # MCP server for Claude Code
 ├── docs/                   # Documentation
 ├── tests/                  # Test suite
 └── wiki/                   # Generated Obsidian vault
@@ -82,7 +85,12 @@ vectrola search "upbeat party music"
   - Track, Artist, Mood, Theme, Movie pages
   - Graph visualization support
   - `vectrola wiki` command
-- Day 5 ⏳: MCP server for Claude Code
+- Day 5 ✅: MCP server for Claude Code
+  - FastMCP server with 5 tools
+  - search_music, find_similar, get_track_info
+  - list_tracks, library_stats
+  - Resources: vectrola://stats, vectrola://tracks
+- Day 6 ⏳: Feature completion & polish
 
 ## Day 2 Pipeline Flow
 
@@ -182,6 +190,7 @@ See `docs/` folder:
 - `lyrics.md` - Lyrics fetching
 - `cli.md` - CLI reference
 - `testing.md` - Test suite guide
+- `mcp.md` - MCP server for Claude Code
 
 ## Known Issues
 

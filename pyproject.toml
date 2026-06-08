@@ -58,6 +58,7 @@ dev = [
 
 [project.scripts]
 vectrola = "vectrola.cli:app"
+vectrola-mcp = "vectrola.mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
