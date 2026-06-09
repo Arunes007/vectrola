@@ -265,9 +265,56 @@ Edit `vectrola/storage/wiki.py` to customize:
 
 ## Limitations
 
-- **No Audio Playback**: Obsidian is markdown-only (no embedded audio)
 - **Manual Sync**: Wiki doesn't auto-update when Qdrant changes
 - **Static Content**: No dynamic queries (use Dataview plugin for that)
+- **Desktop Only for Playback**: Audio player uses `file://` protocol, works only on desktop Obsidian
+
+## Audio Player (Day 6)
+
+Mood and theme pages now include an **interactive audio player**! Click 🎵 to play tracks directly from your local music library.
+
+### Requirements
+
+1. **Dataview Plugin**: Install and enable the Dataview community plugin
+2. **Enable JavaScript**: In Dataview settings, turn on "Enable JavaScript Queries"
+3. **Desktop Obsidian**: Audio playback requires desktop app (not mobile)
+
+### Features
+
+- **Track Play Buttons**: Click 🎵 next to any track to play
+- **Player Bar**: Fixed bottom bar with:
+  - ▶/⏸ Play/Pause
+  - ⏮ Previous / ⏭ Next
+  - 🔀 Shuffle mode
+  - Progress bar with seeking
+  - Current/total time display
+- **Track Highlighting**: Currently playing track is highlighted
+- **Auto-advance**: Plays next track when current ends
+- **Shuffle Memory**: Remembers history in shuffle mode for "previous" navigation
+
+### How It Works
+
+The wiki generator embeds:
+1. Hidden JSON playlist data
+2. HTML track list with play buttons
+3. DataviewJS script for the player
+
+The player uses HTML5 Audio API with `file://` protocol to play local MP3s.
+
+### Troubleshooting
+
+**"No playback / silence"**
+- Verify Dataview plugin is installed and JavaScript queries enabled
+- Check that file paths in Qdrant are correct
+- Use desktop Obsidian (mobile doesn't support `file://`)
+
+**"Player bar doesn't appear"**
+- Enable JavaScript queries in Dataview settings
+- Check browser console for errors (press Cmd+Option+I)
+
+**"Tracks won't play"**
+- Ensure MP3 files exist at the stored paths
+- Some browsers block `file://` access; Obsidian's Electron shell allows it
 
 ## Example Workflows
 

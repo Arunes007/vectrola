@@ -90,7 +90,12 @@ vectrola search "upbeat party music"
   - search_music, find_similar, get_track_info
   - list_tracks, library_stats
   - Resources: vectrola://stats, vectrola://tracks
-- Day 6 ⏳: Feature completion & polish
+- Day 6 ✅: Interactive audio player
+  - Spotify-like player bar in Obsidian wiki
+  - Play/pause, prev/next, shuffle, progress bar
+  - DataviewJS integration
+  - Mood and theme pages with playback
+- Day 7 ⏳: Feature completion & polish
 
 ## Day 2 Pipeline Flow
 
@@ -191,6 +196,7 @@ See `docs/` folder:
 - `cli.md` - CLI reference
 - `testing.md` - Test suite guide
 - `mcp.md` - MCP server for Claude Code
+- `wiki.md` - Obsidian wiki with audio player
 
 ## Known Issues
 
