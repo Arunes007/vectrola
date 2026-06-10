@@ -16,6 +16,16 @@ Build a semantic search engine for your music library using AI. Query with natur
 - **Interactive Obsidian Wiki**: Generate a browsable knowledge graph with Spotify-like audio player, wikilinks, and DataviewJS integration
 - **Claude Code Integration**: MCP server with 5 tools for seamless AI assistant workflows
 
+## Screenshots
+
+### Obsidian Knowledge Graph View
+
+Visualize your entire music library as an interactive network of artists, songs, moods, and themes:
+
+![Obsidian Graph View](docs/images/obsidian-graph-view.png)
+
+*Navigate through connections between songs, artists, moods (like "melancholic", "hopeful"), and themes (like "longing", "identity crisis"). Each node is clickable and leads to detailed pages with lyrics, metadata, and an embedded audio player.*
+
 ## Quick Start
 
 ### Prerequisites
