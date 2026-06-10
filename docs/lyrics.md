@@ -38,12 +38,32 @@ print(result.duration_seconds)  # Track duration
 
 Requires API token. Good for newer/obscure songs.
 
+**Setup:**
+
+1. Get your API token at: https://genius.com/api-clients
+2. Click "New API Client"
+3. Fill in the form (Name: "Vectrola", App Website URL: optional)
+4. Copy the "Client Access Token" (not Client ID or Secret)
+5. Add to your `.env` file:
+   ```bash
+   GENIUS_API_TOKEN=your_token_here
+   ```
+
+**Usage:**
+
 ```python
+from vectrola.ingest.lyrics import LyricsFetcher
+
+# Automatically loads from GENIUS_API_TOKEN environment variable
+fetcher = LyricsFetcher()
+result = fetcher.fetch(artist="Artist", title="Song")
+
+# Or pass token explicitly
 fetcher = LyricsFetcher(genius_token="your_token")
 result = fetcher.fetch(artist="Artist", title="Song")
 ```
 
-Get token at: https://genius.com/api-clients
+**Note:** If `GENIUS_API_TOKEN` is not set, Genius fetching will be skipped and the fetcher will fall back to LRClib or Whisper.
 
 ### 3. Whisper (Fallback)
 

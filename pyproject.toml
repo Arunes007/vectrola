@@ -10,9 +10,15 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
 authors = [
-    {name = "Vectrola Team"}
+    {name = "Vectrola Contributors"}
 ]
 keywords = ["music", "ai", "embeddings", "semantic-search", "knowledge-graph"]
+
+[project.urls]
+Homepage = "https://github.com/Arunes007/vectrola"
+Repository = "https://github.com/Arunes007/vectrola"
+Issues = "https://github.com/Arunes007/vectrola/issues"
+Documentation = "https://github.com/Arunes007/vectrola/blob/main/README.md"
 
 dependencies = [
     # CLI & UI
@@ -31,6 +37,9 @@ dependencies = [
 
     # Local LLM
     "ollama>=0.1",
+
+    # Environment Variables
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

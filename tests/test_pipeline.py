@@ -132,7 +132,8 @@ class TestPipelineIntegration:
     def test_audio_file(self):
         """Provide a test audio file path."""
         # This would be configured based on test environment
-        return Path("/Users/I575797/Music/Music/Media.localized/Music/Unknown Artist/Unknown Album/Humnava.mp3")
+        # Example: return Path("/path/to/test/audio/file.mp3")
+        return Path("tests/fixtures/sample_audio.mp3")
 
     def test_full_pipeline(self, test_audio_file):
         """Test the full ingestion pipeline."""

@@ -54,7 +54,7 @@ Add to your Claude Code settings (`~/.claude/settings.json` or project `.claude/
     "vectrola": {
       "command": "conda",
       "args": ["run", "-n", "nlp", "python", "-m", "vectrola.mcp.server"],
-      "cwd": "/Users/I575797/Workspace/personal/vectrola"
+      "cwd": "/path/to/your/vectrola"
     }
   }
 }

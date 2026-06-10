@@ -3,6 +3,15 @@
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
+import os
+
+# Load environment variables from .env file if it exists
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    # python-dotenv not installed, environment variables can still be set manually
+    pass
 
 
 @dataclass

@@ -27,6 +27,9 @@ env/
 # Generated wiki (user-specific content)
 wiki/
 
+# Internal documentation
+OPEN_SOURCE_READY.md
+
 # Test artifacts
 .pytest_cache/
 .coverage

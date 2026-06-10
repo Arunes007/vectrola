@@ -3,10 +3,12 @@
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional
+import os
 import re
 
-# Default Genius API token (free tier)
-DEFAULT_GENIUS_TOKEN = "uyZplHlQvOt5gAqyXNbSLSfXrxqQHQsPMejNghB25kM970ujvT4A4tORrbgAKKIj"
+# Get Genius API token from environment
+# Get your own at: https://genius.com/api-clients
+DEFAULT_GENIUS_TOKEN = os.getenv("GENIUS_API_TOKEN", "")
 
 
 @dataclass
