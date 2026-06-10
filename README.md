@@ -2,19 +2,19 @@
 
 🎧 **Multimodal Music Knowledge Graph**
 
-Semantic music search using audio embeddings and LLM synthesis. Query your music library with natural language like *"upbeat 80s synth with rain themes"* instead of rigid metadata tags.
+Build a semantic search engine for your music library using AI. Query with natural language like *"melancholic songs about heartbreak"* or *"upbeat 80s synth"* instead of relying on rigid metadata tags. Vectrola combines lyrics, audio embeddings, and LLM-extracted themes to understand your music at a deeper level.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 ## Features
 
-- **Lyrics Transcription**: Automatic speech-to-text using Whisper
+- **Multi-Source Lyrics Fetching**: Fetch lyrics from LRClib (free, synced lyrics) and Genius, with Whisper transcription as fallback for obscure tracks
 - **Semantic Analysis**: Extract themes, moods, and narrative using local LLMs (Ollama)
-- **Vector Search**: Find music by meaning, not just metadata
+- **Hybrid Vector Search**: Find music by meaning using text embeddings (lyrics, moods, themes) and CLAP audio embeddings with RRF fusion
 - **Acoustic Similarity**: Find songs that *sound* similar using CLAP audio embeddings
-- **Obsidian Wiki**: Generate a browsable knowledge graph with interactive audio player
-- **Claude Code Integration**: MCP server for seamless AI assistant workflows
+- **Interactive Obsidian Wiki**: Generate a browsable knowledge graph with Spotify-like audio player, wikilinks, and DataviewJS integration
+- **Claude Code Integration**: MCP server with 5 tools for seamless AI assistant workflows
 
 ## Quick Start
 
@@ -23,15 +23,19 @@ Semantic music search using audio embeddings and LLM synthesis. Query your music
 Before you begin, make sure you have:
 
 1. **Python 3.10+** installed
-2. **Qdrant** vector database running:
+
+2. **Ollama** running locally with a model (required for semantic analysis):
+   ```bash
+   ollama serve
+   ollama pull qwen2.5:3b  # Recommended, or llama3.2:1b for faster/smaller
+   ```
+
+3. **Qdrant** vector database (required for search features only):
    ```bash
    docker run -d --name qdrant -p 6333:6333 qdrant/qdrant
    ```
-3. **Ollama** running locally with a model:
-   ```bash
-   ollama serve
-   ollama pull qwen2.5:3b  # Or llama3.2:1b for faster results
-   ```
+   
+   Note: You can analyze and ingest tracks without Qdrant. It's only needed for `vectrola search` and `vectrola similar` commands.
 
 ### Installation
 
@@ -40,25 +44,37 @@ Before you begin, make sure you have:
 git clone https://github.com/Arunes007/vectrola.git
 cd vectrola
 
-# Install with all features
+# Install with all features (recommended)
 pip install -e ".[full]"
 
-# Or install base features only
+# Or install specific feature sets:
+pip install -e ".[vectors]"   # + Vector search (Qdrant, embeddings)
+pip install -e ".[audio]"      # + CLAP audio embeddings  
+pip install -e ".[mcp]"        # + Claude Code MCP server
+pip install -e ".[dev]"        # + Development tools (pytest, ruff)
+
+# Or minimal install (just ingestion pipeline, no search)
 pip install -e .
 ```
 
 ### API Keys Setup (Optional)
 
-Some features require API keys. Copy the example environment file and add your keys:
+**All features work without API keys** using free services and local processing. API keys are only needed for specific use cases:
 
 ```bash
 cp .env.example .env
-# Edit .env and add your API keys:
-# - YouTube API: https://console.cloud.google.com/apis/credentials
-# - Genius API: https://genius.com/api-clients
+# Edit .env and add your API keys (both optional):
 ```
 
-Note: Genius API token is optional - lyrics can be fetched from LRClib without authentication, with Whisper transcription as a fallback.
+- **Genius API** (optional): For lyrics of newer/obscure songs not in LRClib
+  - Get at: https://genius.com/api-clients
+  - Without it: Falls back to LRClib (free, no auth) → Whisper transcription
+  
+- **YouTube API** (optional): For future YouTube integration features
+  - Get at: https://console.cloud.google.com/apis/credentials
+  - Currently unused in core features
+
+**Most users don't need any API keys** - LRClib provides excellent free lyrics coverage, and Whisper handles the rest.
 
 ### Usage
 
