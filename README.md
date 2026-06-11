@@ -26,6 +26,14 @@ Visualize your entire music library as an interactive network of artists, songs,
 
 *Navigate through connections between songs, artists, moods (like "melancholic", "hopeful"), and themes (like "longing", "identity crisis"). Each node is clickable and leads to detailed pages with lyrics, metadata, and an embedded audio player.*
 
+### Mood-Based Playlist Browser
+
+Browse your library by mood with an integrated audio player:
+
+![Mood Playlist View](docs/images/mood-playlist.png)
+
+*Select any mood from the sidebar to see matching tracks. Click to play directly in Obsidian with the Spotify-like player bar at the bottom.*
+
 ## Quick Start
 
 ### Prerequisites
