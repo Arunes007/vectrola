@@ -3,6 +3,8 @@
 import typer
 from pathlib import Path
 from typing import Optional
+import tempfile
+import shutil
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
@@ -15,6 +17,20 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+
+# Google Drive subcommand group
+gdrive_app = typer.Typer(
+    name="gdrive",
+    help="🌐 Google Drive integration for cloud music ingestion.",
+)
+app.add_typer(gdrive_app, name="gdrive")
+
+# Library subcommand group (Day 7)
+library_app = typer.Typer(
+    name="library",
+    help="📚 Manage your track library.",
+)
+app.add_typer(library_app, name="library")
 
 
 @app.command()
@@ -363,6 +379,17 @@ def status():
     except ImportError:
         checks.append(("CLAP (transformers)", "○ not installed (Day 3)", "dim"))
 
+    # Check Google Drive
+    try:
+        from vectrola.gdrive import is_authenticated
+
+        if is_authenticated():
+            checks.append(("Google Drive", "✓ authenticated", "green"))
+        else:
+            checks.append(("Google Drive", "○ not authenticated", "dim"))
+    except ImportError:
+        checks.append(("Google Drive", "○ not installed (pip install vectrola[gdrive])", "dim"))
+
     # Display
     table = Table(show_header=True, header_style="bold")
     table.add_column("Component")
@@ -372,6 +399,658 @@ def status():
         table.add_row(name, f"[{color}]{status}[/{color}]")
 
     console.print(table)
+
+
+# =============================================================================
+# Google Drive Commands
+# =============================================================================
+
+
+@gdrive_app.command("auth")
+def gdrive_auth(
+    logout: bool = typer.Option(False, "--logout", help="Remove stored credentials"),
+):
+    """
+    Authenticate with Google Drive.
+
+    Opens your browser for Google sign-in. After authorization,
+    you can access your Drive files with other gdrive commands.
+    """
+    try:
+        from vectrola.gdrive import authenticate, logout as do_logout, is_authenticated
+    except ImportError:
+        console.print("[red]Google Drive support not installed.[/red]")
+        console.print("[dim]Install with: pip install vectrola[gdrive][/dim]")
+        raise typer.Exit(1)
+
+    if logout:
+        if do_logout():
+            console.print("[green]✓ Logged out from Google Drive[/green]")
+        else:
+            console.print("[dim]No credentials to remove[/dim]")
+        return
+
+    if is_authenticated():
+        console.print("[green]✓ Already authenticated with Google Drive[/green]")
+        console.print("[dim]Use --logout to sign out[/dim]")
+        return
+
+    try:
+        authenticate()
+    except Exception as e:
+        console.print(f"[red]Authentication failed: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@gdrive_app.command("setup")
+def gdrive_setup(
+    client_id: str = typer.Option(..., "--client-id", help="Your Google OAuth Client ID"),
+    client_secret: str = typer.Option(..., "--client-secret", help="Your Google OAuth Client Secret"),
+):
+    """
+    Configure custom Google OAuth credentials (BYOC).
+
+    Power users can provide their own Google Cloud project credentials
+    to avoid the unverified app warning and 100-user limit.
+
+    See docs/gdrive.md for instructions on creating credentials.
+    """
+    try:
+        from vectrola.gdrive import setup_custom_credentials
+    except ImportError:
+        console.print("[red]Google Drive support not installed.[/red]")
+        console.print("[dim]Install with: pip install vectrola[gdrive][/dim]")
+        raise typer.Exit(1)
+
+    setup_custom_credentials(client_id, client_secret)
+    console.print("[green]✓ Custom credentials saved[/green]")
+    console.print("[dim]Run 'vectrola gdrive auth' to authenticate[/dim]")
+
+
+@gdrive_app.command("list")
+def gdrive_list(
+    path: str = typer.Argument("/", help="Drive folder path to list"),
+    recursive: bool = typer.Option(False, "--recursive", "-r", help="Include subfolders (audio files only)"),
+):
+    """
+    Browse Google Drive folders and audio files.
+
+    Shows folders and audio files at the given path. Use --recursive to
+    find all audio files in subfolders.
+
+    Examples:
+        vectrola gdrive list                     # Browse root
+        vectrola gdrive list /Music              # Browse Music folder
+        vectrola gdrive list /Music --recursive  # Find all audio in Music
+    """
+    try:
+        from vectrola.gdrive import is_authenticated, DriveClient, is_path_allowed, get_allowed_folders
+    except ImportError:
+        console.print("[red]Google Drive support not installed.[/red]")
+        console.print("[dim]Install with: pip install vectrola[gdrive][/dim]")
+        raise typer.Exit(1)
+
+    if not is_authenticated():
+        console.print("[red]Not authenticated. Run 'vectrola gdrive auth' first.[/red]")
+        raise typer.Exit(1)
+
+    client = DriveClient()
+
+    # Check if path is allowed
+    allowed_folders = get_allowed_folders()
+    if allowed_folders and not is_path_allowed(path, client.resolve_path):
+        console.print(f"[red]Access denied: {path}[/red]")
+        console.print("[dim]This folder is not in your allowed list.[/dim]")
+        console.print("[dim]Allowed folders:[/dim]")
+        for fpath in allowed_folders.values():
+            console.print(f"[dim]  📁 {fpath}[/dim]")
+        raise typer.Exit(1)
+
+    try:
+        if recursive:
+            # Recursive mode: only show audio files
+            items = list(client.list_files(path, recursive=True))
+        else:
+            # Browse mode: show folders and audio files
+            items = list(client.list_contents(path))
+    except FileNotFoundError:
+        console.print(f"[red]Path not found: {path}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error listing files: {e}[/red]")
+        raise typer.Exit(1)
+
+    if not items:
+        console.print(f"[yellow]Empty folder: {path}[/yellow]")
+        return
+
+    # Count folders and files
+    folders = [f for f in items if f.is_folder]
+    audio_files = [f for f in items if not f.is_folder]
+
+    # Display table
+    display_path = path if path != "/" else "/ (root)"
+    table = Table(title=f"📁 {display_path}")
+    table.add_column("Name")
+    table.add_column("Type", justify="center")
+    table.add_column("Size", justify="right")
+
+    for f in items:
+        if f.is_folder:
+            table.add_row(f"📁 {f.name}", "[blue]folder[/blue]", "-")
+        else:
+            table.add_row(f"🎵 {f.name}", f.extension, f"{f.size_mb:.1f} MB")
+
+    console.print(table)
+    console.print(f"\n[dim]{len(folders)} folders, {len(audio_files)} audio files[/dim]")
+
+    if folders and not recursive:
+        console.print("[dim]Tip: Use 'vectrola gdrive list <folder>' to browse deeper[/dim]")
+
+
+@gdrive_app.command("ingest")
+def gdrive_ingest(
+    path: str = typer.Argument(..., help="Drive folder path to ingest"),
+    recursive: bool = typer.Option(True, "--recursive/--no-recursive", "-r/-R", help="Include subfolders"),
+    fast: bool = typer.Option(True, "--fast/--slow", "-f/-s", help="Skip Demucs stem separation"),
+):
+    """
+    Ingest audio files from Google Drive into the knowledge graph.
+
+    Downloads files temporarily, processes them with the full pipeline
+    (metadata, lyrics, embeddings), then cleans up.
+
+    Examples:
+        vectrola gdrive ingest "/Music"
+        vectrola gdrive ingest "/Music/Bollywood" --recursive
+    """
+    try:
+        from vectrola.gdrive import is_authenticated, DriveClient
+    except ImportError:
+        console.print("[red]Google Drive support not installed.[/red]")
+        console.print("[dim]Install with: pip install vectrola[gdrive][/dim]")
+        raise typer.Exit(1)
+
+    if not is_authenticated():
+        console.print("[red]Not authenticated. Run 'vectrola gdrive auth' first.[/red]")
+        raise typer.Exit(1)
+
+    from vectrola.ingest.pipeline import IngestPipeline
+
+    client = DriveClient()
+
+    # List files to ingest
+    console.print(f"[dim]Scanning {path}...[/dim]")
+
+    try:
+        files = list(client.list_files(path, recursive=recursive))
+    except FileNotFoundError:
+        console.print(f"[red]Path not found: {path}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error listing files: {e}[/red]")
+        raise typer.Exit(1)
+
+    if not files:
+        console.print(f"[yellow]No audio files found in {path}[/yellow]")
+        return
+
+    total = len(files)
+    console.print(f"🎧 Found {total} audio file(s) in Google Drive")
+
+    if fast:
+        console.print("   Fast mode: skipping Demucs vocal separation")
+    console.print()
+
+    pipeline = IngestPipeline(use_stems=not fast)
+
+    # Create temp directory for downloads
+    temp_dir = Path(tempfile.mkdtemp(prefix="vectrola_gdrive_"))
+
+    results = []
+    errors = []
+
+    try:
+        for i, file in enumerate(files, 1):
+            console.print(f"[{i}/{total}] {file.name}", flush=True)
+
+            try:
+                # Download file
+                console.print(f"   ↓ Downloading from Drive...", end="", flush=True)
+                local_path = client.download_file(file, temp_dir)
+                console.print(" done")
+
+                # Process with pipeline (Day 7: pass GDrive file ID for playback)
+                result = pipeline.process_track(
+                    local_path,
+                    write_file_tags=False,
+                    gdrive_file_id=file.id,  # Day 7: Store GDrive ID for playback
+                    gdrive_path=f"{file.parent_path}/{file.name}",  # Day 7: Original path in Drive
+                )
+
+                results.append(result)
+                moods_str = ", ".join(result.moods[:3]) if result.moods else "no moods"
+                console.print(f"   ✓ Done: {moods_str}")
+
+                # Clean up this file immediately to save space
+                local_path.unlink()
+
+            except Exception as e:
+                errors.append((file, str(e)))
+                console.print(f"   ✗ Error: {e}")
+
+    finally:
+        # Clean up temp directory
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    # Summary
+    console.print()
+    console.print(f"✅ Processed: {len(results)} tracks from Google Drive")
+    if errors:
+        console.print(f"❌ Errors: {len(errors)} tracks")
+
+
+@gdrive_app.command("status")
+def gdrive_status():
+    """
+    Show Google Drive authentication status and quota.
+    """
+    try:
+        from vectrola.gdrive import is_authenticated, DriveClient
+    except ImportError:
+        console.print("[red]Google Drive support not installed.[/red]")
+        console.print("[dim]Install with: pip install vectrola[gdrive][/dim]")
+        raise typer.Exit(1)
+
+    if not is_authenticated():
+        console.print("[yellow]Not authenticated with Google Drive[/yellow]")
+        console.print("[dim]Run 'vectrola gdrive auth' to connect[/dim]")
+        return
+
+    client = DriveClient()
+
+    try:
+        user = client.get_user_info()
+        quota = client.get_quota()
+
+        console.print("[green]✓ Authenticated with Google Drive[/green]")
+        console.print()
+
+        table = Table(show_header=False, box=None)
+        table.add_column("Field", style="bold")
+        table.add_column("Value")
+
+        table.add_row("Account", user.get("emailAddress", "Unknown"))
+        table.add_row("Name", user.get("displayName", "Unknown"))
+
+        # Format quota
+        usage = int(quota.get("usage", 0))
+        limit = int(quota.get("limit", 0))
+
+        if limit > 0:
+            usage_gb = usage / (1024**3)
+            limit_gb = limit / (1024**3)
+            pct = (usage / limit) * 100
+            table.add_row("Storage", f"{usage_gb:.1f} GB / {limit_gb:.1f} GB ({pct:.0f}%)")
+        else:
+            table.add_row("Storage", "Unlimited")
+
+        console.print(table)
+
+    except Exception as e:
+        console.print(f"[red]Error getting status: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@gdrive_app.command("select")
+def gdrive_select():
+    """
+    Open Google Picker to select which folders Vectrola can access.
+
+    Opens a browser window with Google's folder picker. Select one or more
+    folders containing your music. Vectrola will ONLY be able to access
+    the folders you choose - this is enforced by Google, not just the app.
+    """
+    import os
+    try:
+        from vectrola.gdrive.picker import open_folder_picker
+        from vectrola.gdrive import add_allowed_folder, clear_allowed_folders
+    except ImportError as e:
+        console.print(f"[red]Google Drive support not installed: {e}[/red]")
+        console.print("[dim]Install with: pip install vectrola[gdrive][/dim]")
+        raise typer.Exit(1)
+
+    # Use Web App client ID for Picker (different from Desktop app for CLI auth)
+    client_id = os.getenv("GOOGLE_PICKER_CLIENT_ID", "")
+    api_key = os.getenv("GOOGLE_API_KEY", "")
+
+    if not client_id:
+        console.print("[red]GOOGLE_PICKER_CLIENT_ID not set in .env[/red]")
+        console.print("[dim]Create a Web Application OAuth credential at:[/dim]")
+        console.print("[dim]https://console.cloud.google.com/apis/credentials[/dim]")
+        raise typer.Exit(1)
+
+    if not api_key:
+        console.print("[red]GOOGLE_API_KEY not set in .env[/red]")
+        console.print("[dim]Create an API key at: https://console.cloud.google.com/apis/credentials[/dim]")
+        raise typer.Exit(1)
+
+    try:
+        folders, access_token = open_folder_picker(client_id, api_key)
+
+        if not folders:
+            console.print("[yellow]No folders selected.[/yellow]")
+            return
+
+        # Clear existing and add new
+        clear_allowed_folders()
+        for folder in folders:
+            add_allowed_folder(folder['id'], folder['name'])
+
+        console.print(f"\n[green]✓ Access granted to {len(folders)} folder(s):[/green]")
+        for folder in folders:
+            console.print(f"  📁 {folder['name']}")
+
+        console.print("\n[dim]Vectrola can only access these folders and their contents.[/dim]")
+
+    except RuntimeError as e:
+        console.print(f"[red]Folder selection failed: {e}[/red]")
+        raise typer.Exit(1)
+    except Exception as e:
+        console.print(f"[red]Error: {e}[/red]")
+        raise typer.Exit(1)
+
+
+@gdrive_app.command("allow")
+def gdrive_allow(
+    path: str = typer.Argument(..., help="Drive folder path to allow (e.g., /songs)"),
+):
+    """
+    Allow access to a specific Google Drive folder.
+
+    By default, Vectrola can access your entire Drive. Use this command
+    to restrict access to only specific folders.
+
+    Examples:
+        vectrola gdrive allow /songs
+        vectrola gdrive allow "/Music/Bollywood"
+    """
+    try:
+        from vectrola.gdrive import is_authenticated, DriveClient, add_allowed_folder
+    except ImportError:
+        console.print("[red]Google Drive support not installed.[/red]")
+        raise typer.Exit(1)
+
+    if not is_authenticated():
+        console.print("[red]Not authenticated. Run 'vectrola gdrive auth' first.[/red]")
+        raise typer.Exit(1)
+
+    client = DriveClient()
+
+    # Resolve path to folder ID
+    folder_id = client.resolve_path(path)
+    if folder_id is None:
+        console.print(f"[red]Folder not found: {path}[/red]")
+        raise typer.Exit(1)
+
+    # Add to allowed list
+    add_allowed_folder(folder_id, path)
+    console.print(f"[green]✓ Allowed access to: {path}[/green]")
+    console.print("[dim]Vectrola will only access this folder and its subfolders.[/dim]")
+
+
+@gdrive_app.command("allowed")
+def gdrive_allowed():
+    """
+    Show folders that Vectrola is allowed to access.
+    """
+    try:
+        from vectrola.gdrive import get_allowed_folders
+    except ImportError:
+        console.print("[red]Google Drive support not installed.[/red]")
+        raise typer.Exit(1)
+
+    folders = get_allowed_folders()
+
+    if not folders:
+        console.print("[yellow]No folder restrictions set.[/yellow]")
+        console.print("[dim]Vectrola can access your entire Google Drive.[/dim]")
+        console.print("[dim]Use 'vectrola gdrive allow <path>' to restrict access.[/dim]")
+        return
+
+    console.print("[bold]Allowed folders:[/bold]")
+    for folder_id, folder_path in folders.items():
+        console.print(f"  📁 {folder_path}")
+
+    console.print(f"\n[dim]{len(folders)} folder(s) allowed[/dim]")
+
+
+@gdrive_app.command("disallow")
+def gdrive_disallow(
+    path: str = typer.Argument(None, help="Folder path to remove (or --all to clear all)"),
+    all_folders: bool = typer.Option(False, "--all", help="Remove all folder restrictions"),
+):
+    """
+    Remove a folder from the allowed list.
+
+    Examples:
+        vectrola gdrive disallow /songs      # Remove specific folder
+        vectrola gdrive disallow --all       # Clear all restrictions
+    """
+    try:
+        from vectrola.gdrive import (
+            is_authenticated, DriveClient, get_allowed_folders,
+            remove_allowed_folder, clear_allowed_folders
+        )
+    except ImportError:
+        console.print("[red]Google Drive support not installed.[/red]")
+        raise typer.Exit(1)
+
+    if all_folders:
+        count = clear_allowed_folders()
+        console.print(f"[green]✓ Removed all folder restrictions ({count} folders)[/green]")
+        console.print("[dim]Vectrola can now access your entire Google Drive.[/dim]")
+        return
+
+    if not path:
+        console.print("[red]Specify a folder path or use --all to clear all restrictions.[/red]")
+        raise typer.Exit(1)
+
+    # Find folder ID by path
+    folders = get_allowed_folders()
+    normalized_path = "/" + path.strip("/")
+
+    folder_id = None
+    for fid, fpath in folders.items():
+        if "/" + fpath.strip("/") == normalized_path:
+            folder_id = fid
+            break
+
+    if folder_id is None:
+        console.print(f"[red]Folder not in allowed list: {path}[/red]")
+        console.print("[dim]Use 'vectrola gdrive allowed' to see allowed folders.[/dim]")
+        raise typer.Exit(1)
+
+    remove_allowed_folder(folder_id)
+    console.print(f"[green]✓ Removed: {path}[/green]")
+
+
+# =============================================================================
+# Library Commands (Day 7)
+# =============================================================================
+
+
+@library_app.command("list")
+def library_list(
+    limit: int = typer.Option(50, "--limit", "-n", help="Maximum tracks to show"),
+):
+    """
+    List all tracks in your library.
+
+    Shows track IDs, titles, and their playback sources (GDrive/local).
+    """
+    try:
+        from vectrola.services.library import UserLibrary
+    except ImportError:
+        console.print("[red]Library service not available.[/red]")
+        raise typer.Exit(1)
+
+    library = UserLibrary()
+    tracks = library.get_tracks()
+
+    if not tracks:
+        console.print("[yellow]Your library is empty.[/yellow]")
+        console.print("[dim]Run 'vectrola ingest' or 'vectrola gdrive ingest' to add tracks.[/dim]")
+        return
+
+    table = Table(title=f"📚 Your Library ({len(tracks)} tracks)")
+    table.add_column("Track ID", style="cyan", max_width=30)
+    table.add_column("Source", justify="center")
+    table.add_column("Added", justify="right")
+
+    count = 0
+    for track_id, info in tracks.items():
+        if count >= limit:
+            break
+
+        # Determine source
+        has_gdrive = bool(info.get("gdrive_file_id"))
+        has_local = bool(info.get("local_path"))
+
+        if has_gdrive and has_local:
+            source = "☁️ + 💾"
+        elif has_gdrive:
+            source = "☁️ GDrive"
+        elif has_local:
+            source = "💾 Local"
+        else:
+            source = "❌ None"
+
+        added = info.get("added_at", "")[:10]  # Just the date part
+
+        table.add_row(track_id, source, added)
+        count += 1
+
+    console.print(table)
+
+    if len(tracks) > limit:
+        console.print(f"[dim]Showing {limit} of {len(tracks)} tracks. Use --limit to see more.[/dim]")
+
+
+@library_app.command("stats")
+def library_stats():
+    """
+    Show library statistics.
+
+    Displays counts of tracks by source (GDrive, local, both).
+    """
+    try:
+        from vectrola.services.library import UserLibrary
+        from vectrola.config import get_or_create_user_id
+    except ImportError:
+        console.print("[red]Library service not available.[/red]")
+        raise typer.Exit(1)
+
+    library = UserLibrary()
+    stats = library.stats()
+    user_id = get_or_create_user_id()
+
+    console.print("[bold]📊 Library Statistics[/bold]\n")
+
+    table = Table(show_header=False, box=None)
+    table.add_column("Field", style="bold")
+    table.add_column("Value")
+
+    table.add_row("User ID", user_id)
+    table.add_row("Total Tracks", str(stats["total"]))
+    table.add_row("☁️ GDrive only", str(stats["gdrive_only"]))
+    table.add_row("💾 Local only", str(stats["local_only"]))
+    table.add_row("☁️ + 💾 Both", str(stats["both"]))
+
+    console.print(table)
+
+
+@library_app.command("add")
+def library_add(
+    track_id: str = typer.Argument(..., help="Track ID to add (e.g., spotify:xxx or hash:xxx)"),
+    gdrive_id: Optional[str] = typer.Option(None, "--gdrive", "-g", help="Google Drive file ID"),
+    local_path: Optional[str] = typer.Option(None, "--local", "-l", help="Local file path"),
+):
+    """
+    Add a track to your library manually.
+
+    Requires either a GDrive file ID or local path for playback.
+    """
+    try:
+        from vectrola.services.library import UserLibrary
+    except ImportError:
+        console.print("[red]Library service not available.[/red]")
+        raise typer.Exit(1)
+
+    if not gdrive_id and not local_path:
+        console.print("[red]Specify at least one source: --gdrive or --local[/red]")
+        raise typer.Exit(1)
+
+    library = UserLibrary()
+    library.add_track(track_id, gdrive_file_id=gdrive_id, local_path=local_path)
+
+    console.print(f"[green]✓ Added {track_id} to your library[/green]")
+
+
+@library_app.command("remove")
+def library_remove(
+    track_id: str = typer.Argument(..., help="Track ID to remove"),
+):
+    """
+    Remove a track from your library.
+
+    Note: This only removes it from your library, not from the global catalog.
+    """
+    try:
+        from vectrola.services.library import UserLibrary
+    except ImportError:
+        console.print("[red]Library service not available.[/red]")
+        raise typer.Exit(1)
+
+    library = UserLibrary()
+
+    if library.remove_track(track_id):
+        console.print(f"[green]✓ Removed {track_id} from your library[/green]")
+    else:
+        console.print(f"[red]Track not found in your library: {track_id}[/red]")
+        raise typer.Exit(1)
+
+
+@library_app.command("clear")
+def library_clear(
+    confirm: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
+):
+    """
+    Clear all tracks from your library.
+
+    Warning: This removes all tracks from your library but not from the global catalog.
+    """
+    try:
+        from vectrola.services.library import UserLibrary
+    except ImportError:
+        console.print("[red]Library service not available.[/red]")
+        raise typer.Exit(1)
+
+    library = UserLibrary()
+    count = library.count()
+
+    if count == 0:
+        console.print("[yellow]Your library is already empty.[/yellow]")
+        return
+
+    if not confirm:
+        console.print(f"[yellow]This will remove {count} tracks from your library.[/yellow]")
+        if not typer.confirm("Are you sure?"):
+            console.print("[dim]Cancelled[/dim]")
+            return
+
+    removed = library.clear()
+    console.print(f"[green]✓ Cleared {removed} tracks from your library[/green]")
 
 
 def main():

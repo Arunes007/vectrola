@@ -18,28 +18,36 @@ class VectrolaDB:
     - lyrics_dense: 384-dim sentence-transformers embeddings
     - acoustic_clap: 512-dim CLAP audio embeddings (Day 3)
 
-    This enables hybrid search with Reciprocal Rank Fusion (RRF).
+    Day 7 additions:
+    - Support for remote Qdrant with API key
+    - Track ID based indexing for deduplication
+    - User filtering for multi-tenant search
     """
 
     COLLECTION = "vectrola_library"
     LYRICS_VECTOR_SIZE = 384  # all-MiniLM-L6-v2
     ACOUSTIC_VECTOR_SIZE = 512  # CLAP (Day 3)
 
-    def __init__(self, url: str = "http://localhost:6333"):
+    def __init__(self, url: str = "http://localhost:6333", api_key: Optional[str] = None):
         """
         Initialize connection to Qdrant.
 
         Args:
             url: Qdrant server URL
+            api_key: Optional API key for remote Qdrant (Railway, etc.)
         """
         self.url = url
+        self.api_key = api_key
         self._client: Optional[QdrantClient] = None
 
     @property
     def client(self) -> QdrantClient:
-        """Lazy connect to Qdrant."""
+        """Lazy connect to Qdrant with optional API key."""
         if self._client is None:
-            self._client = QdrantClient(url=self.url)
+            if self.api_key:
+                self._client = QdrantClient(url=self.url, api_key=self.api_key)
+            else:
+                self._client = QdrantClient(url=self.url)
             self._ensure_collection()
         return self._client
 
@@ -63,37 +71,168 @@ class VectrolaDB:
                     },
                 )
                 print(f"✓ Created collection '{self.COLLECTION}' with both vectors")
-        except Exception as e:
-            print(f"Error ensuring collection: {e}")
-            raise
+
+            # Create payload indexes for efficient filtering (Day 7)
+            self._ensure_indexes()
+
         except Exception as e:
             print(f"Error ensuring collection: {e}")
             raise
 
-    def _generate_id(self, file_path: str) -> str:
-        """Generate deterministic UUID from file path."""
-        return str(uuid.uuid5(uuid.NAMESPACE_DNS, file_path))
+    def _ensure_indexes(self):
+        """Create payload indexes for track_id and user_ids filtering."""
+        try:
+            # Index for track_id (deduplication lookups)
+            self._client.create_payload_index(
+                collection_name=self.COLLECTION,
+                field_name="track_id",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass  # Index may already exist
+
+        try:
+            # Index for user_ids (multi-tenant filtering)
+            self._client.create_payload_index(
+                collection_name=self.COLLECTION,
+                field_name="user_ids",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass  # Index may already exist
+
+    def _generate_id(self, identifier: str) -> str:
+        """Generate deterministic UUID from identifier (track_id or file_path)."""
+        return str(uuid.uuid5(uuid.NAMESPACE_DNS, identifier))
+
+    def track_exists(self, track_id: str) -> bool:
+        """
+        Check if a track with this ID already has embeddings.
+
+        Args:
+            track_id: Canonical track ID (e.g., "spotify:xxx" or "hash:xxx")
+
+        Returns:
+            True if track exists in the catalog
+        """
+        try:
+            results = self.client.scroll(
+                collection_name=self.COLLECTION,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="track_id",
+                            match=models.MatchValue(value=track_id),
+                        )
+                    ]
+                ),
+                limit=1,
+            )
+            return len(results[0]) > 0
+        except Exception:
+            return False
+
+    def get_track_by_id(self, track_id: str) -> Optional[models.Record]:
+        """
+        Get a track by its canonical track_id.
+
+        Args:
+            track_id: Canonical track ID (e.g., "spotify:xxx" or "hash:xxx")
+
+        Returns:
+            Record with vectors and payload, or None
+        """
+        try:
+            results = self.client.scroll(
+                collection_name=self.COLLECTION,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="track_id",
+                            match=models.MatchValue(value=track_id),
+                        )
+                    ]
+                ),
+                limit=1,
+                with_payload=True,
+                with_vectors=True,
+            )
+            return results[0][0] if results[0] else None
+        except Exception:
+            return None
+
+    def add_user_to_track(self, track_id: str, user_id: str) -> bool:
+        """
+        Add a user to an existing track's user_ids array.
+
+        Used when a track already exists in the catalog and a new user
+        wants to add it to their library.
+
+        Args:
+            track_id: Canonical track ID
+            user_id: User ID to add
+
+        Returns:
+            True if successful, False if track not found
+        """
+        try:
+            # Find the point by track_id
+            results = self.client.scroll(
+                collection_name=self.COLLECTION,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="track_id",
+                            match=models.MatchValue(value=track_id),
+                        )
+                    ]
+                ),
+                limit=1,
+                with_payload=True,
+            )
+
+            if not results[0]:
+                return False
+
+            point = results[0][0]
+            user_ids = point.payload.get("user_ids", [])
+
+            if user_id not in user_ids:
+                user_ids.append(user_id)
+                self.client.set_payload(
+                    collection_name=self.COLLECTION,
+                    payload={"user_ids": user_ids},
+                    points=[point.id],
+                )
+
+            return True
+        except Exception as e:
+            print(f"Error adding user to track: {e}")
+            return False
 
     def upsert_track(
         self,
-        file_path: str,
+        track_id: str,
         lyrics_vector: list[float],
         payload: dict,
         audio_vector: Optional[list[float]] = None,
+        user_id: Optional[str] = None,
     ) -> str:
         """
         Insert or update a track with its vectors.
 
         Args:
-            file_path: Path to the audio file (used as unique ID)
+            track_id: Canonical track ID (e.g., "spotify:xxx" or "hash:xxx")
             lyrics_vector: 384-dim lyrics embedding
             payload: Metadata (title, artist, moods, themes, etc.)
             audio_vector: Optional 512-dim CLAP embedding (Day 3)
+            user_id: Optional user ID to add to user_ids array
 
         Returns:
             The point ID
         """
-        point_id = self._generate_id(file_path)
+        # Use track_id for deterministic point ID
+        point_id = self._generate_id(track_id)
 
         vectors = {"lyrics_dense": lyrics_vector}
 
@@ -101,8 +240,15 @@ class VectrolaDB:
         if audio_vector is not None:
             vectors["acoustic_clap"] = audio_vector
 
-        # Ensure payload includes file_path for retrieval
-        payload["file_path"] = file_path
+        # Ensure track_id is in payload
+        payload["track_id"] = track_id
+
+        # Add user to user_ids array (Day 7)
+        if user_id:
+            user_ids = payload.get("user_ids", [])
+            if user_id not in user_ids:
+                user_ids.append(user_id)
+            payload["user_ids"] = user_ids
 
         self.client.upsert(
             collection_name=self.COLLECTION,
@@ -122,6 +268,7 @@ class VectrolaDB:
         query_vector: list[float],
         limit: int = 10,
         score_threshold: Optional[float] = None,
+        user_id: Optional[str] = None,
     ) -> list[models.ScoredPoint]:
         """
         Search tracks by lyrics embedding.
@@ -130,16 +277,29 @@ class VectrolaDB:
             query_vector: 384-dim query embedding
             limit: Max results to return
             score_threshold: Min similarity score (0-1)
+            user_id: Optional user ID to filter results to user's library
 
         Returns:
             List of ScoredPoint with payload and score
         """
+        query_filter = None
+        if user_id:
+            query_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="user_ids",
+                        match=models.MatchAny(any=[user_id]),
+                    )
+                ]
+            )
+
         return self.client.query_points(
             collection_name=self.COLLECTION,
             query=query_vector,
             using="lyrics_dense",
             limit=limit,
             score_threshold=score_threshold,
+            query_filter=query_filter,
         ).points
 
     def search_by_audio(
@@ -147,6 +307,7 @@ class VectrolaDB:
         query_vector: list[float],
         limit: int = 10,
         score_threshold: Optional[float] = None,
+        user_id: Optional[str] = None,
     ) -> list[models.ScoredPoint]:
         """
         Search tracks by acoustic embedding (Day 3).
@@ -155,16 +316,29 @@ class VectrolaDB:
             query_vector: 512-dim CLAP embedding
             limit: Max results to return
             score_threshold: Min similarity score (0-1)
+            user_id: Optional user ID to filter results to user's library
 
         Returns:
             List of ScoredPoint with payload and score
         """
+        query_filter = None
+        if user_id:
+            query_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="user_ids",
+                        match=models.MatchAny(any=[user_id]),
+                    )
+                ]
+            )
+
         return self.client.query_points(
             collection_name=self.COLLECTION,
             query=query_vector,
             using="acoustic_clap",
             limit=limit,
             score_threshold=score_threshold,
+            query_filter=query_filter,
         ).points
 
     def hybrid_search(
@@ -172,6 +346,7 @@ class VectrolaDB:
         lyrics_vector: list[float],
         audio_vector: list[float],
         limit: int = 10,
+        user_id: Optional[str] = None,
     ) -> list[models.ScoredPoint]:
         """
         True multimodal search using Reciprocal Rank Fusion (Day 3).
@@ -182,10 +357,22 @@ class VectrolaDB:
             lyrics_vector: 384-dim lyrics embedding
             audio_vector: 512-dim CLAP embedding
             limit: Max results to return
+            user_id: Optional user ID to filter results to user's library
 
         Returns:
             RRF-fused results from both vector spaces
         """
+        query_filter = None
+        if user_id:
+            query_filter = models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="user_ids",
+                        match=models.MatchAny(any=[user_id]),
+                    )
+                ]
+            )
+
         return self.client.query_points(
             collection_name=self.COLLECTION,
             prefetch=[
@@ -193,11 +380,13 @@ class VectrolaDB:
                     query=lyrics_vector,
                     using="lyrics_dense",
                     limit=20,
+                    filter=query_filter,
                 ),
                 models.Prefetch(
                     query=audio_vector,
                     using="acoustic_clap",
                     limit=20,
+                    filter=query_filter,
                 ),
             ],
             query=models.FusionQuery(fusion=models.Fusion.RRF),
@@ -206,7 +395,7 @@ class VectrolaDB:
 
     def get_track(self, file_path: str) -> Optional[models.Record]:
         """
-        Get a track by file path.
+        Get a track by file path (legacy method for backward compatibility).
 
         Args:
             file_path: Path to the audio file
@@ -293,6 +482,32 @@ class VectrolaDB:
         )
         return results[0]  # (records, next_offset)
 
+    def list_user_tracks(self, user_id: str, limit: int = 100) -> list[models.Record]:
+        """
+        List tracks in a specific user's library.
+
+        Args:
+            user_id: User ID to filter by
+            limit: Max tracks to return
+
+        Returns:
+            List of Records owned by the user
+        """
+        results = self.client.scroll(
+            collection_name=self.COLLECTION,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="user_ids",
+                        match=models.MatchAny(any=[user_id]),
+                    )
+                ]
+            ),
+            limit=limit,
+            with_vectors=False,
+        )
+        return results[0]
+
     def is_connected(self) -> bool:
         """Check if Qdrant is reachable."""
         try:
@@ -311,5 +526,5 @@ def get_db() -> VectrolaDB:
     global _db
     if _db is None:
         config = get_config()
-        _db = VectrolaDB(url=config.qdrant_url)
+        _db = VectrolaDB(url=config.qdrant_url, api_key=config.qdrant_api_key)
     return _db

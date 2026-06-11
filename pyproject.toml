@@ -57,8 +57,14 @@ mcp = [
     # Day 5: Claude Code Integration
     "mcp[cli]>=1.0",
 ]
+gdrive = [
+    # Google Drive Integration
+    "google-api-python-client>=2.100",
+    "google-auth-oauthlib>=1.1",
+    "google-auth-httplib2>=0.1",
+]
 full = [
-    "vectrola[vectors,audio,mcp]",
+    "vectrola[vectors,audio,mcp,gdrive]",
 ]
 dev = [
     "pytest>=7.0",

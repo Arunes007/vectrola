@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from collections import defaultdict
 
 from vectrola.storage.qdrant import get_db
+from vectrola.config import get_or_create_user_id
 
 
 @dataclass
@@ -28,6 +29,11 @@ class WikiGenerator:
     - Moods
     - Themes
     - Movies/Albums
+
+    Day 7 additions:
+    - GDrive playback support (streams from Google Drive when available)
+    - Falls back to local file playback
+    - Uses UserLibrary for track source mappings
     """
 
     def __init__(self, output_dir: Path = Path("./wiki")):
@@ -40,12 +46,26 @@ class WikiGenerator:
         self.output_dir = Path(output_dir)
         self.db = get_db()
 
+        # User library for GDrive mappings (Day 7)
+        self._library = None
+
         # Subdirectories
         self.tracks_dir = self.output_dir / "Tracks"
         self.artists_dir = self.output_dir / "Artists"
         self.moods_dir = self.output_dir / "Moods"
         self.themes_dir = self.output_dir / "Themes"
         self.movies_dir = self.output_dir / "Movies"
+
+    @property
+    def library(self):
+        """Lazy load user library."""
+        if self._library is None:
+            try:
+                from vectrola.services.library import UserLibrary
+                self._library = UserLibrary()
+            except ImportError:
+                self._library = None
+        return self._library
 
     def generate_all(self):
         """Generate complete wiki."""
@@ -392,12 +412,20 @@ class WikiGenerator:
             title = p.get("title", "Unknown")
             artists = p.get("artists", [])
             file_path = p.get("file_path", "")
+            track_id = p.get("track_id", "")
+
+            # Get GDrive ID from library if available (Day 7)
+            gdrive_id = None
+            if self.library and track_id:
+                gdrive_id = self.library.get_gdrive_id(track_id)
 
             playlist.append({
                 "id": f"track-{i}",
                 "title": title,
                 "artist": ", ".join(artists[:1]) if artists else "Unknown",
                 "path": file_path,
+                "gdrive_id": gdrive_id,  # Day 7
+                "track_id": track_id,    # Day 7
             })
 
         json_str = json.dumps(playlist, ensure_ascii=False)
@@ -433,6 +461,9 @@ class WikiGenerator:
         """
         Get DataviewJS code block for audio player with embedded playlist.
 
+        Supports both local file and Google Drive playback (Day 7).
+        Priority: GDrive (works cross-device) > Local file (faster, offline)
+
         Args:
             tracks: List of track payload dictionaries
             page_title: Title to display at top of page
@@ -440,19 +471,31 @@ class WikiGenerator:
         Returns:
             Complete DataviewJS code block as a string
         """
-        # Build playlist data
+        # Build playlist data with GDrive IDs
         playlist = []
         for i, p in enumerate(tracks):
             title = p.get("title", "Unknown")
             artists = p.get("artists", [])
             file_path = p.get("file_path", "")
             track_link = self._sanitize_filename(title)
+            track_id = p.get("track_id", "")
+
+            # Get GDrive ID from library if available (Day 7)
+            gdrive_id = None
+            if self.library and track_id:
+                gdrive_id = self.library.get_gdrive_id(track_id)
+
+            # Also check if it was stored in payload directly
+            if not gdrive_id:
+                gdrive_id = p.get("gdrive_file_id")
 
             playlist.append({
                 "id": f"track-{i}",
                 "title": title,
                 "artist": ", ".join(artists[:1]) if artists else "Unknown",
                 "path": file_path,
+                "gdrive_id": gdrive_id,  # Day 7
+                "track_id": track_id,    # Day 7
                 "link": track_link,
             })
 
@@ -463,7 +506,7 @@ class WikiGenerator:
         player_id = page_title.lower().replace(" ", "-").replace("'", "").replace('"', "")
 
         script = f'''```dataviewjs
-// Vectrola Audio Player - Global Persistent Player
+// Vectrola Audio Player - Global Persistent Player with GDrive Support
 (function() {{
     const pageTitle = "{escaped_title}";
     const playlist = {playlist_json};
@@ -487,6 +530,188 @@ class WikiGenerator:
     }}
 
     const player = window.vectrolaPlayer;
+
+    // Format time helper
+    function formatTime(seconds) {{
+        if (isNaN(seconds)) return '0:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${{mins}}:${{secs.toString().padStart(2, '0')}}`;
+    }}
+
+    // Define all player control functions on the global player object
+    // These are defined early so event listeners can reference them
+    player.playTrack = async function(index) {{
+        if (index < 0 || index >= player.playlist.length) return;
+
+        const track = player.playlist[index];
+
+        try {{
+            // Clean up previous blob URL if any
+            if (player.audio.src && player.audio.src.startsWith('blob:')) {{
+                URL.revokeObjectURL(player.audio.src);
+            }}
+
+            // Day 7: Try GDrive first, then fall back to local file
+            if (track.gdrive_id) {{
+                // Stream from Google Drive using stored OAuth token
+                console.log('Playing from GDrive:', track.gdrive_id);
+
+                try {{
+                    // Read the OAuth token from ~/.config/vectrola/gdrive_token.json
+                    const fs = require('fs');
+                    const path = require('path');
+                    const os = require('os');
+
+                    const tokenPath = path.join(os.homedir(), '.config', 'vectrola', 'gdrive_token.json');
+                    const tokenData = JSON.parse(fs.readFileSync(tokenPath, 'utf8'));
+                    const accessToken = tokenData.token;
+
+                    // Fetch from Google Drive API with auth
+                    const response = await fetch(
+                        `https://www.googleapis.com/drive/v3/files/${{track.gdrive_id}}?alt=media`,
+                        {{
+                            headers: {{
+                                'Authorization': `Bearer ${{accessToken}}`
+                            }}
+                        }}
+                    );
+
+                    if (!response.ok) {{
+                        throw new Error(`GDrive fetch failed: ${{response.status}}`);
+                    }}
+
+                    const arrayBuffer = await response.arrayBuffer();
+                    const blob = new Blob([arrayBuffer], {{ type: 'audio/mpeg' }});
+                    const blobUrl = URL.createObjectURL(blob);
+                    player.audio.src = blobUrl;
+
+                }} catch (gdriveError) {{
+                    console.error('GDrive playback failed, trying local:', gdriveError);
+                    // Fall back to local file if GDrive fails
+                    if (track.path) {{
+                        const fs = require('fs');
+                        const buffer = fs.readFileSync(track.path);
+                        const blob = new Blob([buffer], {{ type: 'audio/mpeg' }});
+                        player.audio.src = URL.createObjectURL(blob);
+                    }} else {{
+                        throw gdriveError;
+                    }}
+                }}
+            }} else if (track.path) {{
+                // Fallback to local file (faster, works offline)
+                console.log('Playing from local:', track.path);
+                try {{
+                    const fs = require('fs');
+                    const buffer = fs.readFileSync(track.path);
+                    const blob = new Blob([buffer], {{ type: 'audio/mpeg' }});
+                    const blobUrl = URL.createObjectURL(blob);
+                    player.audio.src = blobUrl;
+                }} catch (e) {{
+                    console.error('Local file not found:', track.path, e);
+                    // Try next track
+                    if (index + 1 < player.playlist.length) {{
+                        player.playTrack(index + 1);
+                    }}
+                    return;
+                }}
+            }} else {{
+                console.warn('No playback source for track:', track.title);
+                return;
+            }}
+
+            player.currentIndex = index;
+            player.currentTrack = track;
+            await player.audio.play();
+            player.isPlaying = true;
+
+            // Update UI
+            const titleEl = document.getElementById('vectrola-track-title');
+            const artistEl = document.getElementById('vectrola-track-artist');
+            const ppBtn = document.getElementById('vectrola-playpause-btn');
+            if (titleEl) titleEl.textContent = track.title;
+            if (artistEl) artistEl.textContent = track.artist;
+            if (ppBtn) ppBtn.textContent = '⏸';
+
+            // Update all registered highlight updaters (for all open pages)
+            if (window.vectrolaHighlightUpdaters) {{
+                window.vectrolaHighlightUpdaters.forEach(fn => fn());
+            }}
+
+            if (player.shuffleMode && !player.shuffleHistory.includes(index)) {{
+                player.shuffleHistory.push(index);
+            }}
+        }} catch (e) {{
+            console.error('Playback failed:', e);
+        }}
+    }};
+
+    player.togglePlayPause = function() {{
+        if (player.currentIndex === -1) {{
+            // If nothing playing, use this page's playlist
+            player.playlist = playlist;
+            player.playlistSource = pageTitle;
+            player.playTrack(0);
+            return;
+        }}
+
+        const ppBtn = document.getElementById('vectrola-playpause-btn');
+        if (player.isPlaying) {{
+            player.audio.pause();
+            player.isPlaying = false;
+            if (ppBtn) ppBtn.textContent = '▶';
+        }} else {{
+            player.audio.play().catch(e => console.error('Playback failed:', e));
+            player.isPlaying = true;
+            if (ppBtn) ppBtn.textContent = '⏸';
+        }}
+    }};
+
+    player.nextTrack = function() {{
+        if (!player.playlist.length) return;
+
+        if (player.shuffleMode) {{
+            const unplayed = player.playlist.map((_, i) => i).filter(i => !player.shuffleHistory.includes(i));
+            if (unplayed.length === 0) {{
+                player.shuffleHistory = [];
+                player.nextTrack();
+                return;
+            }}
+            const randomIndex = unplayed[Math.floor(Math.random() * unplayed.length)];
+            player.playTrack(randomIndex);
+        }} else {{
+            player.playTrack((player.currentIndex + 1) % player.playlist.length);
+        }}
+    }};
+
+    player.prevTrack = function() {{
+        if (!player.playlist.length) return;
+
+        if (player.shuffleMode && player.shuffleHistory.length > 1) {{
+            player.shuffleHistory.pop();
+            player.playTrack(player.shuffleHistory[player.shuffleHistory.length - 1]);
+        }} else {{
+            player.playTrack(player.currentIndex <= 0 ? player.playlist.length - 1 : player.currentIndex - 1);
+        }}
+    }};
+
+    player.toggleShuffle = function() {{
+        player.shuffleMode = !player.shuffleMode;
+        const sBtn = document.getElementById('vectrola-shuffle-btn');
+        if (sBtn) sBtn.style.color = player.shuffleMode ? 'var(--interactive-accent)' : '';
+        if (!player.shuffleMode) {{
+            player.shuffleHistory = [];
+        }} else if (player.currentIndex >= 0) {{
+            player.shuffleHistory = [player.currentIndex];
+        }}
+    }};
+
+    // Local wrapper for playTrack that sets this page's playlist
+    function playTrack(index) {{
+        player.playlist = playlist;
+        player.playlistSource = pageTitle;
+        player.playTrack(index);
+    }}
 
     // Show track count only (Obsidian shows the title from filename)
     const trackCount = dv.container.createEl('p', {{ text: `${{playlist.length}} Tracks` }});
@@ -522,7 +747,9 @@ class WikiGenerator:
         const titleEl = info.createEl('div', {{ text: track.title }});
         titleEl.style.cssText = 'font-weight: 500;';
 
-        const artistEl = info.createEl('div', {{ text: track.artist }});
+        // Day 7: Show source indicator (GDrive cloud icon or local icon)
+        const sourceIndicator = track.gdrive_id ? '☁️' : (track.path ? '💾' : '❌');
+        const artistEl = info.createEl('div', {{ text: `${{track.artist}} ${{sourceIndicator}}` }});
         artistEl.style.cssText = 'font-size: 0.85em; color: var(--text-muted);';
 
         const btnContainer = row.createEl('div');
@@ -644,11 +871,11 @@ class WikiGenerator:
         // Append to body for fixed positioning
         document.body.appendChild(playerBar);
 
-        // Event listeners for controls
-        playPauseBtn.addEventListener('click', togglePlayPause);
-        nextBtn.addEventListener('click', nextTrack);
-        prevBtn.addEventListener('click', prevTrack);
-        shuffleBtn.addEventListener('click', toggleShuffle);
+        // Event listeners for controls - call through player object for latest functions
+        playPauseBtn.addEventListener('click', () => player.togglePlayPause());
+        nextBtn.addEventListener('click', () => player.nextTrack());
+        prevBtn.addEventListener('click', () => player.prevTrack());
+        shuffleBtn.addEventListener('click', () => player.toggleShuffle());
 
         progressBarContainer.addEventListener('click', (e) => {{
             if (player.audio.duration) {{
@@ -673,7 +900,7 @@ class WikiGenerator:
             if (tt) tt.textContent = formatTime(player.audio.duration);
         }});
 
-        player.audio.addEventListener('ended', nextTrack);
+        player.audio.addEventListener('ended', () => player.nextTrack());
 
         // Store UI references
         player.ui = {{ playerBar, trackTitleEl, trackArtistEl, playPauseBtn, shuffleBtn, progressFill, currentTimeEl, totalTimeEl }};
@@ -691,121 +918,20 @@ class WikiGenerator:
     // Update highlight when page loads (in case current track is in this playlist)
     updateLocalHighlight();
 
-    // Format time helper
-    function formatTime(seconds) {{
-        if (isNaN(seconds)) return '0:00';
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${{mins}}:${{secs.toString().padStart(2, '0')}}`;
+    // Register this page's highlight updater globally so playTrack can call it
+    if (!window.vectrolaHighlightUpdaters) {{
+        window.vectrolaHighlightUpdaters = new Set();
     }}
+    window.vectrolaHighlightUpdaters.add(updateLocalHighlight);
 
-    // Play track
-    async function playTrack(index) {{
-        if (index < 0 || index >= player.playlist.length) return;
-
-        const track = player.playlist[index];
-        if (!track.path) {{
-            console.warn('No file path for track:', track.title);
-            return;
+    // Cleanup when page unloads (Obsidian re-renders)
+    const observer = new MutationObserver(() => {{
+        if (!document.contains(trackListEl)) {{
+            window.vectrolaHighlightUpdaters.delete(updateLocalHighlight);
+            observer.disconnect();
         }}
-
-        try {{
-            const fs = require('fs');
-            const buffer = fs.readFileSync(track.path);
-            const blob = new Blob([buffer], {{ type: 'audio/mpeg' }});
-            const blobUrl = URL.createObjectURL(blob);
-
-            if (player.audio.src && player.audio.src.startsWith('blob:')) {{
-                URL.revokeObjectURL(player.audio.src);
-            }}
-
-            player.currentIndex = index;
-            player.currentTrack = track;
-            player.audio.src = blobUrl;
-            await player.audio.play();
-            player.isPlaying = true;
-
-            // Update UI
-            const titleEl = document.getElementById('vectrola-track-title');
-            const artistEl = document.getElementById('vectrola-track-artist');
-            const ppBtn = document.getElementById('vectrola-playpause-btn');
-            if (titleEl) titleEl.textContent = track.title;
-            if (artistEl) artistEl.textContent = track.artist;
-            if (ppBtn) ppBtn.textContent = '⏸';
-
-            updateLocalHighlight();
-
-            if (player.shuffleMode && !player.shuffleHistory.includes(index)) {{
-                player.shuffleHistory.push(index);
-            }}
-        }} catch (e) {{
-            console.error('Playback failed:', e);
-        }}
-    }}
-
-    // Toggle play/pause
-    function togglePlayPause() {{
-        if (player.currentIndex === -1) {{
-            // If nothing playing, use this page's playlist
-            player.playlist = playlist;
-            player.playlistSource = pageTitle;
-            playTrack(0);
-            return;
-        }}
-
-        const ppBtn = document.getElementById('vectrola-playpause-btn');
-        if (player.isPlaying) {{
-            player.audio.pause();
-            player.isPlaying = false;
-            if (ppBtn) ppBtn.textContent = '▶';
-        }} else {{
-            player.audio.play().catch(e => console.error('Playback failed:', e));
-            player.isPlaying = true;
-            if (ppBtn) ppBtn.textContent = '⏸';
-        }}
-    }}
-
-    // Next track
-    function nextTrack() {{
-        if (!player.playlist.length) return;
-
-        if (player.shuffleMode) {{
-            const unplayed = player.playlist.map((_, i) => i).filter(i => !player.shuffleHistory.includes(i));
-            if (unplayed.length === 0) {{
-                player.shuffleHistory = [];
-                nextTrack();
-                return;
-            }}
-            const randomIndex = unplayed[Math.floor(Math.random() * unplayed.length)];
-            playTrack(randomIndex);
-        }} else {{
-            playTrack((player.currentIndex + 1) % player.playlist.length);
-        }}
-    }}
-
-    // Previous track
-    function prevTrack() {{
-        if (!player.playlist.length) return;
-
-        if (player.shuffleMode && player.shuffleHistory.length > 1) {{
-            player.shuffleHistory.pop();
-            playTrack(player.shuffleHistory[player.shuffleHistory.length - 1]);
-        }} else {{
-            playTrack(player.currentIndex <= 0 ? player.playlist.length - 1 : player.currentIndex - 1);
-        }}
-    }}
-
-    // Toggle shuffle
-    function toggleShuffle() {{
-        player.shuffleMode = !player.shuffleMode;
-        const sBtn = document.getElementById('vectrola-shuffle-btn');
-        if (sBtn) sBtn.style.color = player.shuffleMode ? 'var(--interactive-accent)' : '';
-        if (!player.shuffleMode) {{
-            player.shuffleHistory = [];
-        }} else if (player.currentIndex >= 0) {{
-            player.shuffleHistory = [player.currentIndex];
-        }}
-    }}
+    }});
+    observer.observe(document.body, {{ childList: true, subtree: true }});
 }})();
 ```'''
         return script

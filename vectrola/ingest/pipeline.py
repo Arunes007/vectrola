@@ -4,13 +4,42 @@ from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 import json
+import hashlib
 
-from vectrola.config import get_config
+from vectrola.config import get_config, get_or_create_user_id
 from vectrola.ingest.transcribe import Transcriber, TranscriptionResult
 from vectrola.ingest.synthesis import Synthesizer, SynthesisResult
 from vectrola.ingest.lyrics import LyricsFetcher, LyricsResult
 from vectrola.ingest.spotify import SpotifyFetcher, SpotifyTrack
 from vectrola.storage.tags import write_tags, read_file_tags, FileTags
+
+
+def generate_track_id(
+    spotify_id: Optional[str],
+    artist: str,
+    title: str,
+) -> str:
+    """
+    Generate canonical track ID for deduplication.
+
+    Uses Spotify ID if available (most reliable), otherwise falls back to
+    an MD5 hash of normalized artist + title.
+
+    Args:
+        spotify_id: Spotify track ID (e.g., "4PTG3Z6ehGkBFwjybzWkR8")
+        artist: Artist name
+        title: Track title
+
+    Returns:
+        Canonical track ID (e.g., "spotify:4PTG3Z6ehGkBFwjybzWkR8" or "hash:a1b2c3d4e5f6g7h8")
+    """
+    if spotify_id:
+        return f"spotify:{spotify_id}"
+
+    # Normalize and hash artist+title
+    normalized = f"{artist.lower().strip()}:{title.lower().strip()}"
+    hash_digest = hashlib.md5(normalized.encode()).hexdigest()[:16]
+    return f"hash:{hash_digest}"
 
 
 @dataclass
@@ -55,6 +84,14 @@ class TrackAnalysis:
     # Source tracking
     metadata_source: str = ""  # "file_tags", "lrclib", "musicbrainz"
 
+    # Track identification (Day 7 - Multi-tenant)
+    track_id: str = ""  # "spotify:xxx" or "hash:xxx"
+    spotify_id: Optional[str] = None
+
+    # Cloud storage (Day 7)
+    gdrive_file_id: Optional[str] = None  # Google Drive file ID for playback
+    gdrive_path: Optional[str] = None  # Original path in Google Drive
+
     def to_dict(self) -> dict:
         """Convert to dictionary for storage."""
         return {
@@ -79,6 +116,12 @@ class TrackAnalysis:
             "key": self.key,
             "energy": self.energy,
             "metadata_source": self.metadata_source,
+            # Track identification (Day 7)
+            "track_id": self.track_id,
+            "spotify_id": self.spotify_id,
+            # Cloud storage (Day 7)
+            "gdrive_file_id": self.gdrive_file_id,
+            "gdrive_path": self.gdrive_path,
         }
 
 
@@ -148,22 +191,34 @@ class IngestPipeline:
             self._metadata_fetcher = MetadataFetcher(genius_token=self.genius_token)
         return self._metadata_fetcher
 
-    def process_track(self, file_path: Path, write_file_tags: bool = True, verbose: bool = True) -> TrackAnalysis:
+    def process_track(
+        self,
+        file_path: Path,
+        write_file_tags: bool = True,
+        verbose: bool = True,
+        gdrive_file_id: Optional[str] = None,
+        gdrive_path: Optional[str] = None,
+    ) -> TrackAnalysis:
         """
         Process a single audio track through the full pipeline.
 
         Pipeline:
         1. Read file tags first - if complete, use them
-        2. Fetch metadata from Spotify (artist, album, year)
+        2. Fetch metadata from Spotify (artist, album, year, spotify_id)
         3. Fetch lyrics from LRClib (with artist from Spotify)
         4. Fetch composer/lyricist from MusicBrainz (fallback)
         5. Fallback to Whisper if no lyrics found
         6. LLM synthesis for themes/moods/narrative
+        7. Generate track_id for deduplication
+        8. Store in Qdrant (with deduplication check)
+        9. Add to user's library
 
         Args:
             file_path: Path to the audio file
             write_file_tags: Whether to write analysis back to file tags
             verbose: Print progress messages
+            gdrive_file_id: Optional Google Drive file ID for cloud playback
+            gdrive_path: Optional original path in Google Drive
 
         Returns:
             TrackAnalysis with all extracted metadata
@@ -175,6 +230,7 @@ class IngestPipeline:
                 print(f"\n   → {msg}", end="", flush=True)
 
         file_path = Path(file_path)
+        spotify_id = None  # Will be captured from Spotify lookup
 
         # ===========================================
         # 1. Read existing file tags
@@ -199,6 +255,9 @@ class IngestPipeline:
 
         spotify_track = self.spotify_fetcher.get_best_match(title, artist_str)
         if spotify_track:
+            # Capture spotify_id for track identification
+            spotify_id = spotify_track.spotify_id
+
             # Get artist from Spotify if we don't have one
             if not artists and spotify_track.artists:
                 artists = spotify_track.artists
@@ -320,6 +379,14 @@ class IngestPipeline:
         # 7. Build analysis result
         # ===========================================
         log("Building analysis...")
+
+        # Generate canonical track_id for deduplication
+        track_id = generate_track_id(
+            spotify_id=spotify_id,
+            artist=artists[0] if artists else "",
+            title=title,
+        )
+
         analysis = TrackAnalysis(
             file_path=file_path,
             title=title,
@@ -339,39 +406,73 @@ class IngestPipeline:
             narrative=narrative,
             imagery=imagery,
             metadata_source=metadata_source,
+            # Track identification (Day 7)
+            track_id=track_id,
+            spotify_id=spotify_id,
+            # Cloud storage (Day 7)
+            gdrive_file_id=gdrive_file_id,
+            gdrive_path=gdrive_path,
         )
 
         # ===========================================
-        # 8. Generate lyrics embedding and store in Qdrant
+        # 8. Generate embeddings and store in Qdrant (with deduplication)
         # ===========================================
         log("Generating embeddings & storing in Qdrant...")
         try:
             from vectrola.ingest.embeddings import get_text_embedder, build_searchable_text
             from vectrola.storage.qdrant import get_db
 
-            # Build searchable text with weighted moods + synonyms
-            searchable_text = build_searchable_text(lyrics, moods, themes, narrative)
+            db = get_db()
+            user_id = get_or_create_user_id()
 
-            # Generate embedding from combined text
-            embedder = get_text_embedder()
-            lyrics_vector = embedder.embed(searchable_text) if searchable_text else None
+            # Check if track already exists (deduplication)
+            if db.track_exists(track_id):
+                log("Track exists in catalog, adding to your library...")
+                db.add_user_to_track(track_id, user_id)
+            else:
+                # New track - generate embeddings
+                log("New track, generating embeddings...")
 
-            if lyrics_vector:
-                analysis.lyrics_vector = lyrics_vector
+                # Build searchable text with weighted moods + synonyms
+                searchable_text = build_searchable_text(lyrics, moods, themes, narrative)
 
-                # Store in Qdrant
-                db = get_db()
-                db.upsert_track(
-                    file_path=str(file_path),
-                    lyrics_vector=lyrics_vector,
-                    payload=analysis.to_dict(),
+                # Generate embedding from combined text
+                embedder = get_text_embedder()
+                lyrics_vector = embedder.embed(searchable_text) if searchable_text else None
+
+                if lyrics_vector:
+                    analysis.lyrics_vector = lyrics_vector
+
+                    # Store in Qdrant with track_id and user_id
+                    db.upsert_track(
+                        track_id=track_id,
+                        lyrics_vector=lyrics_vector,
+                        payload=analysis.to_dict(),
+                        user_id=user_id,
+                    )
+
+            # ===========================================
+            # 9. Add to user's library (always)
+            # ===========================================
+            log("Adding to user library...")
+            try:
+                from vectrola.services.library import UserLibrary
+                library = UserLibrary(user_id)
+                library.add_track(
+                    track_id=track_id,
+                    gdrive_file_id=gdrive_file_id,
+                    local_path=str(file_path),
                 )
+            except ImportError:
+                # Library service not available yet - that's OK
+                pass
+
         except Exception as e:
             # Don't fail the whole pipeline if Qdrant is unavailable
             log(f"Warning: Qdrant error: {e}")
 
         # ===========================================
-        # 9. Write tags to file
+        # 10. Write tags to file
         # ===========================================
         if write_file_tags:
             log("Writing tags to file...")

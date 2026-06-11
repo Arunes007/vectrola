@@ -5,6 +5,7 @@ from typing import Optional
 
 from vectrola.storage.qdrant import get_db, VectrolaDB
 from vectrola.ingest.embeddings import get_text_embedder, get_audio_embedder, TextEmbedder, AudioEmbedder
+from vectrola.config import get_or_create_user_id, get_config
 
 
 @dataclass
@@ -21,6 +22,7 @@ class SearchResult:
     themes: list[str]
     narrative: str
     lyrics_preview: str  # First 200 chars of lyrics
+    track_id: str = ""  # Canonical track ID (Day 7)
 
     def __str__(self) -> str:
         artist_str = ", ".join(self.artists) if self.artists else "Unknown"
@@ -35,12 +37,29 @@ class SemanticSearch:
     - Lyrics-only search (Day 2)
     - Audio-only search (acoustic similarity, Day 3)
     - Hybrid RRF search (lyrics + audio, Day 3)
+    - User-filtered search (Day 7) - only returns tracks in user's library
     """
 
-    def __init__(self):
+    def __init__(self, user_id: Optional[str] = None):
+        """
+        Initialize semantic search.
+
+        Args:
+            user_id: User ID for filtering results to user's library.
+                     If None and multi_tenant is enabled, uses auto-generated ID.
+        """
         self._db: Optional[VectrolaDB] = None
         self._text_embedder: Optional[TextEmbedder] = None
         self._audio_embedder: Optional[AudioEmbedder] = None
+
+        # User filtering (Day 7)
+        config = get_config()
+        if user_id:
+            self.user_id = user_id
+        elif config.multi_tenant:
+            self.user_id = get_or_create_user_id()
+        else:
+            self.user_id = None  # No filtering in single-user mode
 
     @property
     def db(self) -> VectrolaDB:
@@ -73,6 +92,8 @@ class SemanticSearch:
         """
         Search tracks by natural language query.
 
+        In multi-tenant mode, results are filtered to user's library.
+
         Examples:
             - "melancholic songs about time passing"
             - "upbeat Hindi songs for a party"
@@ -97,6 +118,7 @@ class SemanticSearch:
                 lyrics_vector=lyrics_vector,
                 audio_vector=audio_vector,
                 limit=limit,
+                user_id=self.user_id,  # User filtering (Day 7)
             )
 
         elif mode == "audio":
@@ -106,6 +128,7 @@ class SemanticSearch:
                 query_vector=audio_vector,
                 limit=limit,
                 score_threshold=score_threshold,
+                user_id=self.user_id,  # User filtering (Day 7)
             )
 
         else:
@@ -115,6 +138,7 @@ class SemanticSearch:
                 query_vector=query_vector,
                 limit=limit,
                 score_threshold=score_threshold,
+                user_id=self.user_id,  # User filtering (Day 7)
             )
 
         # Convert to SearchResult objects
@@ -128,6 +152,8 @@ class SemanticSearch:
     ) -> list[SearchResult]:
         """
         Find tracks similar to a given track.
+
+        In multi-tenant mode, results are filtered to user's library.
 
         Args:
             file_path: Path to the reference track
@@ -147,13 +173,21 @@ class SemanticSearch:
             if "acoustic_clap" not in track.vector:
                 return []
             vector = track.vector["acoustic_clap"]
-            results = self.db.search_by_audio(query_vector=vector, limit=limit + 1)
+            results = self.db.search_by_audio(
+                query_vector=vector,
+                limit=limit + 1,
+                user_id=self.user_id,  # User filtering (Day 7)
+            )
         else:
             # Lyrics similarity (Day 2)
             if "lyrics_dense" not in track.vector:
                 return []
             vector = track.vector["lyrics_dense"]
-            results = self.db.search_by_lyrics(query_vector=vector, limit=limit + 1)
+            results = self.db.search_by_lyrics(
+                query_vector=vector,
+                limit=limit + 1,
+                user_id=self.user_id,  # User filtering (Day 7)
+            )
 
         # Convert and filter out self
         search_results = []
@@ -186,37 +220,40 @@ class SemanticSearch:
                     themes=payload.get("themes", []),
                     narrative=payload.get("narrative", ""),
                     lyrics_preview=lyrics_preview,
+                    track_id=payload.get("track_id", ""),  # Day 7
                 )
             )
         return search_results
 
 
 # Convenience functions
-def search_by_vibe(query: str, limit: int = 10) -> list[SearchResult]:
+def search_by_vibe(query: str, limit: int = 10, user_id: Optional[str] = None) -> list[SearchResult]:
     """
     Search the music library by vibe/description.
 
     Args:
         query: Natural language description (e.g., "sad songs about heartbreak")
         limit: Number of results
+        user_id: Optional user ID for filtering (multi-tenant mode)
 
     Returns:
         List of matching tracks
     """
-    searcher = SemanticSearch()
+    searcher = SemanticSearch(user_id=user_id)
     return searcher.search(query, limit=limit)
 
 
-def find_similar_tracks(file_path: str, limit: int = 10) -> list[SearchResult]:
+def find_similar_tracks(file_path: str, limit: int = 10, user_id: Optional[str] = None) -> list[SearchResult]:
     """
     Find tracks similar to a given track.
 
     Args:
         file_path: Path to the reference track
         limit: Number of results
+        user_id: Optional user ID for filtering (multi-tenant mode)
 
     Returns:
         List of similar tracks
     """
-    searcher = SemanticSearch()
+    searcher = SemanticSearch(user_id=user_id)
     return searcher.find_similar(file_path, limit=limit)
