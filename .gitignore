@@ -29,6 +29,10 @@ wiki/
 
 # Internal documentation
 OPEN_SOURCE_READY.md
+CLAUDE.md
+docs/day3-clap.md
+docs/day7-*.md
+docs/day8-*.md
 
 # Test artifacts
 .pytest_cache/
