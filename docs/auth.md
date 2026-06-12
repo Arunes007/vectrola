@@ -191,6 +191,8 @@ vectrola migrate-user --dry-run
 vectrola migrate-user
 ```
 
+**Security:** For protection, you can only migrate from **this device's anonymous user**. You cannot migrate someone else's tracks.
+
 **Example output:**
 ```
 Migration Plan
@@ -221,12 +223,11 @@ vectrola migrate-user
 # Preview without making changes
 vectrola migrate-user --dry-run
 
-# Explicit source and target
-vectrola migrate-user --from anon_abc123 --to my_new_user
-
-# Merge from old account to new
-vectrola migrate-user --from old@email.com --to new@email.com
+# Specify target user explicitly
+vectrola migrate-user --to my_new_user
 ```
+
+**Note:** The `--from` option is restricted to this device's anonymous user for security.
 
 ### Using Migration Script (Advanced)
 

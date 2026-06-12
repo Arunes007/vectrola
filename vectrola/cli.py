@@ -1356,8 +1356,8 @@ def migrate_user(
     """
     Migrate tracks from one user ID to another.
 
-    Use this to transfer your anonymous library to a logged-in account,
-    or to merge libraries from different devices.
+    Use this to transfer your anonymous library to a logged-in account.
+    For security, you can only migrate from this device's anonymous user.
 
     Examples:
         # Migrate current anon to logged-in user (most common)
@@ -1366,9 +1366,6 @@ def migrate_user(
 
         # Preview migration without changes
         vectrola migrate-user --dry-run
-
-        # Explicit source and target
-        vectrola migrate-user --from anon_abc123 --to my_user_id
     """
     from vectrola.config import get_current_user
     from vectrola.storage.qdrant import get_db
@@ -1378,12 +1375,24 @@ def migrate_user(
     config_dir = Path.home() / ".config" / "vectrola"
     anon_path = config_dir / "anon_id"
 
+    # Get this device's anonymous user ID
+    local_anon_id = None
+    if anon_path.exists():
+        local_anon_id = anon_path.read_text().strip()
+
     # Determine source user
     if from_user is None:
-        if anon_path.exists():
-            from_user = anon_path.read_text().strip()
+        if local_anon_id:
+            from_user = local_anon_id
         else:
-            console.print("[red]No anonymous user ID found. Use --from to specify source.[/red]")
+            console.print("[red]No anonymous user ID found on this device.[/red]")
+            console.print("[dim]You can only migrate from this device's anonymous user.[/dim]")
+            raise typer.Exit(1)
+    else:
+        # Security check: only allow migrating from this device's anon user
+        if from_user != local_anon_id:
+            console.print(f"[red]Security error: Cannot migrate from '{from_user}'[/red]")
+            console.print(f"[dim]You can only migrate from this device's anonymous user: {local_anon_id or '(none)'}[/dim]")
             raise typer.Exit(1)
 
     # Determine target user
@@ -1392,7 +1401,7 @@ def migrate_user(
         if is_logged_in and current_user != from_user:
             to_user = current_user
         else:
-            console.print("[red]No logged-in user found. Use --to to specify target, or run 'vectrola login' first.[/red]")
+            console.print("[red]No logged-in user found. Run 'vectrola login' first.[/red]")
             raise typer.Exit(1)
 
     if from_user == to_user:
