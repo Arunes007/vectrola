@@ -34,65 +34,39 @@ Browse your library by mood with an integrated audio player:
 
 *Select any mood from the sidebar to see matching tracks. Click to play directly in Obsidian with the Spotify-like player bar at the bottom.*
 
-## Quick Start
+## Quick Install
 
-### Prerequisites
-
-Before you begin, make sure you have:
-
-1. **Python 3.10+** installed
-
-2. **Ollama** running locally with a model (required for semantic analysis):
-   ```bash
-   ollama serve
-   ollama pull qwen2.5:3b  # Recommended, or llama3.2:1b for faster/smaller
-   ```
-
-3. **Qdrant** vector database (required for search features only):
-   ```bash
-   docker run -d --name qdrant -p 6333:6333 qdrant/qdrant
-   ```
-   
-   Note: You can analyze and ingest tracks without Qdrant. It's only needed for `vectrola search` and `vectrola similar` commands.
-
-### Installation
-
+**macOS / Linux:**
 ```bash
-# Clone the repository
-git clone https://github.com/Arunes007/vectrola.git
-cd vectrola
-
-# Install with all features (recommended)
-pip install -e ".[full]"
-
-# Or install specific feature sets:
-pip install -e ".[vectors]"   # + Vector search (Qdrant, embeddings)
-pip install -e ".[audio]"      # + CLAP audio embeddings  
-pip install -e ".[mcp]"        # + Claude Code MCP server
-pip install -e ".[dev]"        # + Development tools (pytest, ruff)
-
-# Or minimal install (just ingestion pipeline, no search)
-pip install -e .
+curl -fsSL https://raw.githubusercontent.com/Arunes007/vectrola/main/installer/install.sh | bash
 ```
 
-### API Keys Setup (Optional)
-
-**All features work without API keys** using free services and local processing. API keys are only needed for specific use cases:
-
-```bash
-cp .env.example .env
-# Edit .env and add your API keys (both optional):
+**Windows (PowerShell):**
+```powershell
+irm https://raw.githubusercontent.com/Arunes007/vectrola/main/installer/install.ps1 | iex
 ```
 
-- **Genius API** (optional): For lyrics of newer/obscure songs not in LRClib
-  - Get at: https://genius.com/api-clients
-  - Without it: Falls back to LRClib (free, no auth) → Whisper transcription
-  
-- **YouTube API** (optional): For future YouTube integration features
-  - Get at: https://console.cloud.google.com/apis/credentials
-  - Currently unused in core features
+The installer will guide you through configuration. See [Installation Guide](docs/install.md) for manual installation and advanced options.
 
-**Most users don't need any API keys** - LRClib provides excellent free lyrics coverage, and Whisper handles the rest.
+### Post-Installation
+
+If you chose **Local Ollama** (the default), install and start Ollama:
+
+```bash
+# Install Ollama
+# macOS: brew install ollama
+# Linux: curl -fsSL https://ollama.ai/install.sh | sh
+
+# Start Ollama and download a model
+ollama serve          # In one terminal
+ollama pull qwen2.5:3b  # In another terminal
+```
+
+### Verify Installation
+
+```bash
+vectrola status
+```
 
 ### Usage
 
@@ -118,6 +92,7 @@ vectrola wiki
 
 ## Documentation
 
+- [Installation Guide](docs/install.md) ⬅️ Start here for manual installation
 - [Architecture Overview](docs/architecture.md)
 - [Semantic Search Guide](docs/search.md)
 - [Qdrant Vector Database](docs/qdrant.md)
