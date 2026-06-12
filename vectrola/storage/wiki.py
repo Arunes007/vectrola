@@ -90,16 +90,24 @@ class WikiGenerator:
         return self._library
 
     def generate_all(self):
-        """Generate complete wiki."""
+        """Generate complete wiki for current user."""
+        from vectrola.config import get_current_user
+
+        user_id, is_logged_in = get_current_user()
+
         print("🎧 Generating Vectrola Wiki...")
+        if is_logged_in:
+            print(f"   User: {user_id}")
+        else:
+            print(f"   User: {user_id} (anonymous)")
         print()
 
         # Create directories
         self._create_directories()
 
-        # Fetch all tracks
-        tracks = self.db.list_all(limit=500)
-        print(f"Found {len(tracks)} tracks")
+        # Fetch only this user's tracks
+        tracks = self.db.list_user_tracks(user_id, limit=500)
+        print(f"Found {len(tracks)} tracks in your library")
         print()
 
         # Generate pages
@@ -110,6 +118,10 @@ class WikiGenerator:
         self._generate_movie_pages(tracks)
         self._generate_era_pages(tracks)
         self._generate_home_page(tracks)
+
+        # Write owner file for security tracking
+        owner_file = self.output_dir / ".wiki_owner"
+        owner_file.write_text(user_id)
 
         print()
         print(f"✅ Wiki generated at: {self.output_dir}")
