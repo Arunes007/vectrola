@@ -45,9 +45,9 @@ class VectrolaDB:
         """Lazy connect to Qdrant with optional API key."""
         if self._client is None:
             if self.api_key:
-                self._client = QdrantClient(url=self.url, api_key=self.api_key)
+                self._client = QdrantClient(url=self.url, api_key=self.api_key, timeout=30)
             else:
-                self._client = QdrantClient(url=self.url)
+                self._client = QdrantClient(url=self.url, timeout=30)
             self._ensure_collection()
         return self._client
 
