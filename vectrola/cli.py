@@ -1330,13 +1330,17 @@ def login():
 
 
 @app.command()
-def logout():
+def logout(
+    purge_wiki: bool = typer.Option(False, "--purge-wiki", help="Delete the wiki folder for privacy"),
+):
     """
     Logout and switch to anonymous mode.
 
     After logout, you'll use a device-local anonymous user ID.
     Your library data remains on the server but won't be accessible
     until you login again with the same email/username.
+
+    Use --purge-wiki to delete the wiki folder (for privacy when switching users).
     """
     import json
 
@@ -1352,9 +1356,14 @@ def logout():
         session_path.unlink()
         console.print("[green]✅ Logged out. Switched to anonymous mode.[/green]")
 
-        # Check if wiki exists with the logged-out user - auto-regenerate
-        wiki_owner_file = Path("./wiki/.wiki_owner")
-        if wiki_owner_file.exists() and old_user:
+        # Handle wiki based on --purge-wiki flag
+        wiki_dir = Path("./wiki")
+        wiki_owner_file = wiki_dir / ".wiki_owner"
+
+        if purge_wiki and wiki_dir.exists():
+            shutil.rmtree(wiki_dir)
+            console.print("[green]🗑️  Wiki deleted.[/green]")
+        elif wiki_owner_file.exists() and old_user:
             owner = wiki_owner_file.read_text().strip()
             if owner == old_user:
                 console.print()

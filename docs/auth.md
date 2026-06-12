@@ -93,9 +93,24 @@ Logout and return to anonymous mode.
 ```bash
 $ vectrola logout
 ✅ Logged out. Switched to anonymous mode.
+
+Wiki was generated for 'alice@example.com'. Regenerating for anonymous user...
 ```
 
 Your library data remains on the server but won't be accessible until you login again.
+
+**Options:**
+
+| Flag | Description |
+|------|-------------|
+| `--purge-wiki` | Delete the wiki folder instead of regenerating (for privacy) |
+
+```bash
+# Delete wiki completely on logout (for privacy)
+$ vectrola logout --purge-wiki
+✅ Logged out. Switched to anonymous mode.
+🗑️  Wiki deleted.
+```
 
 ### `vectrola whoami`
 
