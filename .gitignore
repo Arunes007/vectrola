@@ -38,3 +38,4 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+obsidian-vectrola-sync/node_modules/
