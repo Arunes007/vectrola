@@ -175,7 +175,62 @@ When enabled:
 
 ## Migrating Existing Data
 
-If you have existing tracks and want to associate them with your user:
+### Using `migrate-user` Command (Recommended)
+
+If you started with anonymous mode and want to migrate to a logged-in account:
+
+```bash
+# 1. Login first
+vectrola login
+# Enter: your-email@example.com
+
+# 2. Preview what will be migrated
+vectrola migrate-user --dry-run
+
+# 3. Run the migration
+vectrola migrate-user
+```
+
+**Example output:**
+```
+Migration Plan
+  From: anon_df80fcbd31b7
+  To:   your-email@example.com
+
+Found 47 tracks to migrate.
+
+Migrate 47 tracks from 'anon_df80fcbd31b7' to 'your-email@example.com'? [y/N]: y
+Migrating tracks... ━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 100% 47/47
+
+✅ Migrated 47/47 tracks successfully!
+
+Remove anonymous ID file? (You're now using the logged-in account) [y/N]: y
+Removed ~/.config/vectrola/anon_id
+
+Next steps:
+  • Run 'vectrola library list' to see your migrated tracks
+  • Run 'vectrola wiki' to regenerate your wiki
+```
+
+### `migrate-user` Options
+
+```bash
+# Migrate current anon to logged-in user (most common)
+vectrola migrate-user
+
+# Preview without making changes
+vectrola migrate-user --dry-run
+
+# Explicit source and target
+vectrola migrate-user --from anon_abc123 --to my_new_user
+
+# Merge from old account to new
+vectrola migrate-user --from old@email.com --to new@email.com
+```
+
+### Using Migration Script (Advanced)
+
+For bulk operations or custom migrations:
 
 ```bash
 # Login first

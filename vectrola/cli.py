@@ -1347,6 +1347,155 @@ def whoami():
         console.print("[dim](Single device only. Run 'vectrola login' to sync across devices.)[/dim]")
 
 
+@app.command("migrate-user")
+def migrate_user(
+    from_user: str = typer.Option(None, "--from", "-f", help="Source user ID to migrate from (default: current anon ID)"),
+    to_user: str = typer.Option(None, "--to", "-t", help="Target user ID to migrate to (default: current logged-in user)"),
+    dry_run: bool = typer.Option(False, "--dry-run", "-n", help="Show what would be migrated without making changes"),
+):
+    """
+    Migrate tracks from one user ID to another.
+
+    Use this to transfer your anonymous library to a logged-in account,
+    or to merge libraries from different devices.
+
+    Examples:
+        # Migrate current anon to logged-in user (most common)
+        vectrola login
+        vectrola migrate-user
+
+        # Preview migration without changes
+        vectrola migrate-user --dry-run
+
+        # Explicit source and target
+        vectrola migrate-user --from anon_abc123 --to my_user_id
+    """
+    from vectrola.config import get_current_user
+    from vectrola.storage.qdrant import get_db
+    from pathlib import Path
+    import json
+
+    config_dir = Path.home() / ".config" / "vectrola"
+    anon_path = config_dir / "anon_id"
+
+    # Determine source user
+    if from_user is None:
+        if anon_path.exists():
+            from_user = anon_path.read_text().strip()
+        else:
+            console.print("[red]No anonymous user ID found. Use --from to specify source.[/red]")
+            raise typer.Exit(1)
+
+    # Determine target user
+    if to_user is None:
+        current_user, is_logged_in = get_current_user()
+        if is_logged_in and current_user != from_user:
+            to_user = current_user
+        else:
+            console.print("[red]No logged-in user found. Use --to to specify target, or run 'vectrola login' first.[/red]")
+            raise typer.Exit(1)
+
+    if from_user == to_user:
+        console.print("[yellow]Source and target user are the same. Nothing to migrate.[/yellow]")
+        raise typer.Exit(0)
+
+    console.print(f"\n[bold]Migration Plan[/bold]")
+    console.print(f"  From: [yellow]{from_user}[/yellow]")
+    console.print(f"  To:   [green]{to_user}[/green]")
+    console.print()
+
+    # Get database
+    db = get_db()
+
+    # Find all tracks with from_user in user_ids
+    try:
+        from qdrant_client import models
+
+        results, _ = db.client.scroll(
+            collection_name=db.COLLECTION,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="user_ids",
+                        match=models.MatchAny(any=[from_user]),
+                    )
+                ]
+            ),
+            limit=1000,
+            with_payload=True,
+        )
+    except Exception as e:
+        console.print(f"[red]Error querying Qdrant: {e}[/red]")
+        raise typer.Exit(1)
+
+    if not results:
+        console.print(f"[yellow]No tracks found for user '{from_user}'.[/yellow]")
+        raise typer.Exit(0)
+
+    console.print(f"Found [bold]{len(results)}[/bold] tracks to migrate.")
+
+    if dry_run:
+        console.print("\n[dim]Dry run - no changes made. Remove --dry-run to apply.[/dim]")
+        console.print("\nTracks that would be migrated:")
+        for point in results[:10]:
+            title = point.payload.get("title", "Unknown")
+            artists = ", ".join(point.payload.get("artists", [])[:2])
+            console.print(f"  • {title} - {artists}")
+        if len(results) > 10:
+            console.print(f"  ... and {len(results) - 10} more")
+        raise typer.Exit(0)
+
+    # Confirm migration
+    if not typer.confirm(f"\nMigrate {len(results)} tracks from '{from_user}' to '{to_user}'?"):
+        console.print("[yellow]Migration cancelled.[/yellow]")
+        raise typer.Exit(0)
+
+    # Perform migration
+    migrated = 0
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Migrating tracks...", total=len(results))
+
+        for point in results:
+            user_ids = point.payload.get("user_ids", [])
+
+            # Replace from_user with to_user
+            if from_user in user_ids:
+                user_ids.remove(from_user)
+            if to_user not in user_ids:
+                user_ids.append(to_user)
+
+            # Update in Qdrant
+            try:
+                db.client.set_payload(
+                    collection_name=db.COLLECTION,
+                    payload={"user_ids": user_ids},
+                    points=[point.id],
+                )
+                migrated += 1
+            except Exception as e:
+                console.print(f"[red]Error updating track: {e}[/red]")
+
+            progress.advance(task)
+
+    console.print(f"\n[green]✅ Migrated {migrated}/{len(results)} tracks successfully![/green]")
+
+    # Optionally clean up anon_id file
+    if from_user.startswith("anon_") and anon_path.exists():
+        if typer.confirm("\nRemove anonymous ID file? (You're now using the logged-in account)"):
+            anon_path.unlink()
+            console.print("[dim]Removed ~/.config/vectrola/anon_id[/dim]")
+
+    console.print("\n[bold]Next steps:[/bold]")
+    console.print("  • Run 'vectrola library list' to see your migrated tracks")
+    console.print("  • Run 'vectrola wiki' to regenerate your wiki")
+
+
 def main():
     """Entry point for the CLI."""
     app()
