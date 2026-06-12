@@ -11,8 +11,10 @@ Build a semantic search engine for your music library using AI. Query with natur
 
 - **Multi-Source Lyrics Fetching**: Fetch lyrics from LRClib (free, synced lyrics) and Genius, with Whisper transcription as fallback for obscure tracks
 - **Semantic Analysis**: Extract themes, moods, and narrative using local LLMs (Ollama)
-- **Hybrid Vector Search**: Find music by meaning using text embeddings (lyrics, moods, themes) and CLAP audio embeddings with RRF fusion
+- **Hybrid Vector Search**: Find music by meaning using multilingual text embeddings (Hindi + English) and CLAP audio embeddings with RRF fusion
 - **Acoustic Similarity**: Find songs that *sound* similar using CLAP audio embeddings
+- **Google Drive Integration**: Ingest music directly from Google Drive - stream and play on any device without downloading
+- **Anonymous by Default**: Works offline with no account; optionally login to sync your library across devices
 - **Interactive Obsidian Wiki**: Generate a browsable knowledge graph with Spotify-like audio player, wikilinks, and DataviewJS integration
 - **Claude Code Integration**: MCP server with 5 tools for seamless AI assistant workflows
 
@@ -80,19 +82,69 @@ vectrola analyze ~/Music/song.mp3
 # Ingest files and write metadata to tags
 vectrola ingest ~/Music/
 
-# Search by vibe/mood
+# Search by vibe/mood (hybrid search by default)
 vectrola search "melancholic sad song"
+vectrola search "upbeat party music" --mode lyrics   # text only
+vectrola search "instrumental jazz" --mode audio     # audio only
 
-# Find similar tracks
+# Find acoustically similar tracks
 vectrola similar "Tum Hi Ho"
 
 # Generate Obsidian wiki
 vectrola wiki
 ```
 
+### Google Drive Integration
+
+Ingest music directly from your Google Drive - no need to download files locally:
+
+```bash
+# Authenticate with Google (one-time setup)
+vectrola gdrive auth
+
+# List your Drive folders
+vectrola gdrive list /
+
+# Ingest music from a Drive folder
+vectrola gdrive ingest "/My Music"
+```
+
+Once ingested, tracks can be streamed from Google Drive on any device. The Obsidian wiki player automatically uses GDrive for cross-device playback.
+
+See [Google Drive Integration](docs/gdrive.md) for setup instructions.
+
+### Multi-Device Sync
+
+Vectrola works **anonymously by default** - no account needed. An anonymous user ID is auto-generated on first run, and your library is stored locally.
+
+To sync across devices, login with an account:
+
+```bash
+# Check current user status (anonymous or logged in)
+vectrola whoami
+
+# Login with email/username (enables multi-device sync)
+vectrola login
+
+# Logout and return to anonymous mode
+vectrola logout
+
+# View your library
+vectrola library list
+vectrola library stats
+```
+
+**Anonymous mode**: Library stored locally, works offline, no account required.
+
+**Logged in**: Library syncs via shared Qdrant database. Ingest on one device, search on another. GDrive playback works on any device.
+
+See [Multi-Tenancy Architecture](docs/multitenancy.md) for details.
+
 ## Documentation
 
 - [Installation Guide](docs/install.md) ⬅️ Start here for manual installation
+- [Google Drive Integration](docs/gdrive.md) - Cloud music ingestion & streaming
+- [Multi-Tenancy Architecture](docs/multitenancy.md) - User accounts & library sync
 - [Architecture Overview](docs/architecture.md)
 - [Semantic Search Guide](docs/search.md)
 - [Qdrant Vector Database](docs/qdrant.md)
@@ -113,7 +165,7 @@ vectrola wiki
 | 4 | Wiki Generation (Obsidian) | ✅ Complete |
 | 5 | Claude Code Integration (MCP) | ✅ Complete |
 | 6 | Interactive Audio Player | ✅ Complete |
-| 7 | Feature Completion & Polish | ⏳ In Progress |
+| 7 | Google Drive & Multi-Tenant | ✅ Complete |
 
 ## Contributing
 
