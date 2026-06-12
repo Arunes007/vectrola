@@ -946,14 +946,14 @@ def library_stats():
     """
     try:
         from vectrola.services.library import UserLibrary
-        from vectrola.config import get_or_create_user_id
+        from vectrola.config import get_current_user
     except ImportError:
         console.print("[red]Library service not available.[/red]")
         raise typer.Exit(1)
 
     library = UserLibrary()
     stats = library.stats()
-    user_id = get_or_create_user_id()
+    user_id, is_logged_in = get_current_user()
 
     console.print("[bold]📊 Library Statistics[/bold]\n")
 
@@ -961,7 +961,8 @@ def library_stats():
     table.add_column("Field", style="bold")
     table.add_column("Value")
 
-    table.add_row("User ID", user_id)
+    status = f"{user_id} (logged in)" if is_logged_in else f"{user_id} (anonymous)"
+    table.add_row("User", status)
     table.add_row("Total Tracks", str(stats["total"]))
     table.add_row("☁️ GDrive only", str(stats["gdrive_only"]))
     table.add_row("💾 Local only", str(stats["local_only"]))
@@ -1051,6 +1052,91 @@ def library_clear(
 
     removed = library.clear()
     console.print(f"[green]✓ Cleared {removed} tracks from your library[/green]")
+
+
+# =============================================================================
+# Authentication Commands
+# =============================================================================
+
+
+@app.command()
+def login():
+    """
+    Login to sync your library across devices.
+
+    Your email/username is used as your user ID to sync your library
+    across multiple devices. Without login, you're in anonymous mode
+    which only works on a single device.
+    """
+    import json
+    from datetime import datetime
+
+    session_path = Path.home() / ".config" / "vectrola" / "session.json"
+
+    if session_path.exists():
+        try:
+            session = json.loads(session_path.read_text())
+            console.print(f"[yellow]Already logged in as: {session['user_id']}[/yellow]")
+            console.print("[dim]Run 'vectrola logout' first to switch users.[/dim]")
+            return
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    email = typer.prompt("Email or username")
+
+    # Basic validation
+    email = email.strip().lower()
+    if not email or len(email) < 3:
+        console.print("[red]❌ Invalid email/username (must be at least 3 characters)[/red]")
+        raise typer.Exit(1)
+
+    # Save session
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+    session = {
+        "user_id": email,
+        "logged_in_at": datetime.utcnow().isoformat() + "Z"
+    }
+    session_path.write_text(json.dumps(session, indent=2))
+
+    console.print(f"[green]✅ Logged in as {email}[/green]")
+    console.print("[dim]   Your library will now sync across devices.[/dim]")
+
+
+@app.command()
+def logout():
+    """
+    Logout and switch to anonymous mode.
+
+    After logout, you'll use a device-local anonymous user ID.
+    Your library data remains on the server but won't be accessible
+    until you login again with the same email/username.
+    """
+    session_path = Path.home() / ".config" / "vectrola" / "session.json"
+
+    if session_path.exists():
+        session_path.unlink()
+        console.print("[green]✅ Logged out. Switched to anonymous mode.[/green]")
+    else:
+        console.print("[yellow]Not logged in.[/yellow]")
+
+
+@app.command()
+def whoami():
+    """
+    Show current user status.
+
+    Displays whether you're logged in or using anonymous mode,
+    and your current user ID.
+    """
+    from vectrola.config import get_current_user
+
+    user_id, is_logged_in = get_current_user()
+
+    if is_logged_in:
+        console.print(f"[bold green]Logged in as:[/bold green] {user_id}")
+    else:
+        console.print(f"[bold yellow]Anonymous user:[/bold yellow] {user_id}")
+        console.print("[dim](Single device only. Run 'vectrola login' to sync across devices.)[/dim]")
 
 
 def main():

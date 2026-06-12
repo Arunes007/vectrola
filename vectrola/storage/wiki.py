@@ -104,7 +104,7 @@ class WikiGenerator:
             dir_path.mkdir(parents=True, exist_ok=True)
 
     def _generate_track_pages(self, tracks):
-        """Generate individual track pages."""
+        """Generate individual track pages with play button."""
         print(f"📝 Generating track pages...")
 
         for track in tracks:
@@ -117,8 +117,10 @@ class WikiGenerator:
             filename = self._sanitize_filename(f"{title}")
             file_path = self.tracks_dir / f"{filename}.md"
 
-            # Build page content
-            content = self._build_track_page(p)
+            # Build page content with audio player (single track playlist)
+            content = self._get_audio_player_script([p], title)
+            content += "\n\n"
+            content += self._build_track_page(p)
 
             # Write page
             file_path.write_text(content, encoding="utf-8")
@@ -220,7 +222,7 @@ class WikiGenerator:
         return "\n".join(lines)
 
     def _generate_artist_pages(self, tracks):
-        """Generate artist index pages."""
+        """Generate artist index pages with interactive audio player."""
         print(f"👤 Generating artist pages...")
 
         # Group tracks by artist
@@ -235,18 +237,8 @@ class WikiGenerator:
             filename = self._sanitize_filename(artist)
             file_path = self.artists_dir / f"{filename}.md"
 
-            lines = [f"# {artist}", ""]
-            lines.append(f"**Tracks:** {len(artist_tracks)}")
-            lines.append("")
-            lines.append("## Songs")
-            lines.append("")
-
-            for p in artist_tracks:
-                title = p.get("title", "Unknown")
-                track_link = f"[[{self._sanitize_filename(title)}]]"
-                moods = p.get("moods", [])
-                mood_str = f" - *{', '.join(moods[:2])}*" if moods else ""
-                lines.append(f"- {track_link}{mood_str}")
+            # Use audio player script for artist pages
+            lines = [self._get_audio_player_script(artist_tracks, artist)]
 
             file_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -297,7 +289,7 @@ class WikiGenerator:
         print(f"   ✓ {len(themes_tracks)} theme pages")
 
     def _generate_movie_pages(self, tracks):
-        """Generate movie/album index pages."""
+        """Generate movie/album index pages with interactive audio player."""
         print(f"🎬 Generating movie pages...")
 
         # Group tracks by movie
@@ -313,23 +305,8 @@ class WikiGenerator:
             filename = self._sanitize_filename(movie)
             file_path = self.movies_dir / f"{filename}.md"
 
-            lines = [f"# {movie}", ""]
-
-            # Get year from first track
-            year = movie_tracks[0].get("year", "")
-            if year:
-                lines.append(f"**Year:** {year}")
-                lines.append("")
-
-            lines.append(f"**Tracks:** {len(movie_tracks)}")
-            lines.append("")
-
-            for p in movie_tracks:
-                title = p.get("title", "Unknown")
-                artists = p.get("artists", [])
-                track_link = f"[[{self._sanitize_filename(title)}]]"
-                artist_str = f" - {', '.join(artists[:1])}" if artists else ""
-                lines.append(f"- {track_link}{artist_str}")
+            # Use audio player script for movie pages
+            lines = [self._get_audio_player_script(movie_tracks, movie)]
 
             file_path.write_text("\n".join(lines), encoding="utf-8")
 

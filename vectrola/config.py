@@ -2,9 +2,10 @@
 
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Optional, Tuple
 import os
 import uuid
+import json
 
 # Load environment variables from .env file if it exists
 try:
@@ -75,9 +76,55 @@ def get_config() -> VectrolaConfig:
     return config
 
 
+def get_current_user() -> Tuple[str, bool]:
+    """
+    Get current user ID and login status.
+
+    Returns:
+        (user_id, is_logged_in) tuple
+
+    Priority:
+    1. VECTROLA_USER_ID env var (for testing/CI)
+    2. session.json (logged-in user)
+    3. anon_id file (anonymous, generated if missing)
+    """
+    # 1. Env var override
+    env_user = os.getenv("VECTROLA_USER_ID")
+    if env_user:
+        return (env_user, True)
+
+    config_dir = Path.home() / ".config" / "vectrola"
+
+    # 2. Check for logged-in session
+    session_path = config_dir / "session.json"
+    if session_path.exists():
+        try:
+            session = json.loads(session_path.read_text())
+            if session.get("user_id"):
+                return (session["user_id"], True)
+        except (json.JSONDecodeError, KeyError):
+            pass
+
+    # 3. Anonymous user
+    anon_path = config_dir / "anon_id"
+    if anon_path.exists():
+        anon_id = anon_path.read_text().strip()
+        if anon_id:
+            return (anon_id, False)
+
+    # Generate new anonymous ID
+    anon_id = f"anon_{uuid.uuid4().hex[:12]}"
+    config_dir.mkdir(parents=True, exist_ok=True)
+    anon_path.write_text(anon_id)
+
+    return (anon_id, False)
+
+
 def get_or_create_user_id() -> str:
     """
     Get user ID from config/env, or auto-generate and persist.
+
+    DEPRECATED: Use get_current_user() instead which also returns login status.
 
     Priority:
     1. VECTROLA_USER_ID environment variable
@@ -87,22 +134,6 @@ def get_or_create_user_id() -> str:
     Returns:
         User ID string (e.g., "user_abc123def456")
     """
-    cfg = get_config()
-
-    # 1. Check env/config
-    if cfg.user_id:
-        return cfg.user_id
-
-    # 2. Check stored user_id file
-    user_id_path = Path.home() / ".config" / "vectrola" / "user_id"
-    if user_id_path.exists():
-        stored_id = user_id_path.read_text().strip()
-        if stored_id:
-            return stored_id
-
-    # 3. Generate new user_id and persist
-    new_user_id = f"user_{uuid.uuid4().hex[:12]}"
-    user_id_path.parent.mkdir(parents=True, exist_ok=True)
-    user_id_path.write_text(new_user_id)
-
-    return new_user_id
+    # Use new function but return just the user_id for backwards compatibility
+    user_id, _ = get_current_user()
+    return user_id
