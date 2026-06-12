@@ -19,7 +19,7 @@ try:
 except ImportError:
     pass
 
-SCOPES = ["https://www.googleapis.com/auth/drive.readonly"]
+SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
 # Token storage location (XDG-compliant)
 TOKEN_DIR = Path.home() / ".config" / "vectrola"

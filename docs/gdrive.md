@@ -372,11 +372,70 @@ vectrola gdrive auth
 
 ## Security Notes
 
-- **Read-only access**: Vectrola only requests `drive.readonly` scope - it cannot modify or delete your files
+- **Read-only access by default**: For music ingestion, Vectrola uses `drive.readonly` scope - it cannot modify or delete your files
+- **Write access for sync**: Wiki sync uses `drive.file` scope - Vectrola can only access files it creates
 - **Local storage**: OAuth tokens are stored in `~/.config/vectrola/` with secure file permissions (600)
 - **No server**: Authentication happens entirely locally - no data sent to Vectrola servers
 - **Token refresh**: Access tokens auto-refresh using the stored refresh token
 - **Folder restrictions**: When you set allowed folders, Vectrola enforces these locally (your Drive remains fully accessible through other apps)
+
+---
+
+## Write Operations (Wiki Sync)
+
+When you use `vectrola wiki --sync`, Vectrola needs write access to upload the wiki to Google Drive. This uses the `drive.file` scope instead of `drive.readonly`.
+
+### Scope Comparison
+
+| Scope | Access Level | Use Case |
+|-------|--------------|----------|
+| `drive.readonly` | Read any file | Ingest music from Drive |
+| `drive.file` | Read/write files created by app only | Wiki sync |
+
+**Note:** `drive.file` is more restrictive than `drive.readonly` in some ways - Vectrola can only access files it creates, not your entire Drive.
+
+### Re-Authentication Required
+
+If you previously authenticated with read-only scope, you must re-authenticate to enable sync:
+
+```bash
+vectrola gdrive auth --logout
+vectrola gdrive auth
+```
+
+The new authentication grants both read access (for music ingestion) and write access (for wiki sync), but only to Vectrola-created files.
+
+### Upload Methods
+
+The DriveClient provides these methods for wiki sync:
+
+| Method | Description |
+|--------|-------------|
+| `create_folder(name, parent_id)` | Create a folder |
+| `find_or_create_folder(path)` | Create nested folders (e.g., `/Vectrola/wiki`) |
+| `upload_file(local_path, parent_id)` | Upload a new file |
+| `update_file(file_id, local_path)` | Update existing file |
+| `find_file(name, parent_id)` | Find file by name |
+| `upload_or_update_file(local_path, parent_id)` | Smart upload (creates or updates) |
+
+### Folder Structure
+
+Wiki sync creates this structure in your Drive:
+
+```
+My Drive/
+└── Vectrola/              (created by app)
+    └── wiki/              (created by app)
+        ├── README.md
+        ├── Tracks/
+        ├── Artists/
+        ├── Moods/
+        ├── Themes/
+        ├── Movies/
+        └── Eras/
+```
+
+All folders and files are created by Vectrola, so they fall under the `drive.file` scope.
 
 ## Troubleshooting
 

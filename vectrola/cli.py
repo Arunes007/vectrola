@@ -278,12 +278,16 @@ def similar(
 @app.command()
 def wiki(
     output: Path = typer.Option(Path("./wiki"), "--output", "-o", help="Wiki output directory"),
+    sync: bool = typer.Option(False, "--sync", "-s", help="Upload wiki to Google Drive after generation"),
+    drive_path: str = typer.Option("/Vectrola/wiki", "--drive-path", help="Google Drive folder path for sync"),
 ):
     """
     Generate Obsidian wiki from indexed tracks.
 
     Creates markdown pages with wikilinks for tracks, artists, moods, themes, and movies.
     Open the generated directory in Obsidian to explore the music knowledge graph.
+
+    Use --sync to upload the wiki to Google Drive for cross-device access.
     """
     from vectrola.storage.wiki import WikiGenerator
 
@@ -307,11 +311,81 @@ def wiki(
 
     console.print()
     console.print(f"[green]✅ Wiki generated at: {output}[/green]")
+
+    # Sync to Google Drive if requested
+    if sync:
+        console.print()
+        console.print("[bold]☁️  Syncing wiki to Google Drive...[/bold]")
+
+        try:
+            from vectrola.gdrive import is_authenticated
+            from vectrola.gdrive.client import DriveClient
+
+            if not is_authenticated():
+                console.print("[red]Not authenticated with Google Drive.[/red]")
+                console.print("[dim]Run 'vectrola gdrive auth' first.[/dim]")
+                raise typer.Exit(1)
+
+            client = DriveClient()
+            _upload_wiki_to_drive(client, output, drive_path)
+
+            console.print()
+            console.print(f"[green]✅ Wiki synced to Google Drive: {drive_path}[/green]")
+
+        except ImportError:
+            console.print("[red]Google Drive support not installed.[/red]")
+            console.print("[dim]Install with: pip install vectrola[gdrive][/dim]")
+            raise typer.Exit(1)
+        except Exception as e:
+            console.print(f"[red]Sync failed: {e}[/red]")
+            raise typer.Exit(1)
+
     console.print()
     console.print("[dim]To view in Obsidian:[/dim]")
     console.print(f"[dim]1. Open Obsidian[/dim]")
     console.print(f"[dim]2. Open folder as vault: {output.absolute()}[/dim]")
     console.print(f"[dim]3. Enable Graph View (Cmd+G) to see connections[/dim]")
+
+
+def _upload_wiki_to_drive(client, wiki_dir: Path, drive_path: str):
+    """Upload wiki directory to Google Drive."""
+    from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+
+    # Create the drive folder structure
+    console.print(f"  Creating folder: {drive_path}")
+    root_folder_id = client.find_or_create_folder(drive_path)
+
+    # Collect all files to upload
+    files_to_upload = []
+    for item in wiki_dir.rglob("*"):
+        if item.is_file() and not item.name.startswith("."):
+            rel_path = item.relative_to(wiki_dir)
+            files_to_upload.append((item, rel_path))
+
+    console.print(f"  Uploading {len(files_to_upload)} files...")
+
+    # Upload with progress
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        transient=False,
+    ) as progress:
+        task = progress.add_task("Uploading", total=len(files_to_upload))
+
+        for local_path, rel_path in files_to_upload:
+            # Get or create parent folder
+            parent_path = str(rel_path.parent)
+            if parent_path == ".":
+                parent_id = root_folder_id
+            else:
+                full_parent_path = f"{drive_path}/{parent_path}"
+                parent_id = client.find_or_create_folder(full_parent_path)
+
+            # Upload or update the file
+            client.upload_or_update_file(local_path, parent_id)
+            progress.update(task, advance=1)
 
 
 @app.command()
@@ -406,15 +480,107 @@ def status():
 # =============================================================================
 
 
+def _browse_and_select_folders():
+    """Interactive folder browser for selecting GDrive folders."""
+    try:
+        from vectrola.gdrive import DriveClient, add_allowed_folder, get_allowed_folders
+    except ImportError:
+        return
+
+    client = DriveClient()
+    current_path = "/"
+    selected_folders = []
+
+    console.print("[bold]Navigate with numbers, 's' to select current folder, 'd' when done[/bold]")
+    console.print()
+
+    while True:
+        # List current directory
+        try:
+            items = list(client.list_contents(current_path))
+        except Exception as e:
+            console.print(f"[red]Error: {e}[/red]")
+            break
+
+        folders = [f for f in items if f.is_folder]
+        audio_files = [f for f in items if not f.is_folder]
+
+        # Show current location
+        display_path = current_path if current_path != "/" else "/ (root)"
+        console.print(f"\n[bold blue]📁 {display_path}[/bold blue]")
+        console.print(f"[dim]{len(audio_files)} audio files in this folder[/dim]")
+        console.print()
+
+        # Show navigation options
+        console.print("[dim]0.[/dim] .. [dim](go up)[/dim]")
+        for i, folder in enumerate(folders, 1):
+            console.print(f"[dim]{i}.[/dim] 📁 {folder.name}")
+
+        console.print()
+        if selected_folders:
+            console.print(f"[green]Selected: {len(selected_folders)} folder(s)[/green]")
+
+        # Get user input
+        console.print()
+        choice = typer.prompt(
+            "Enter number, [s]elect this folder, or [d]one",
+            default="d"
+        ).strip().lower()
+
+        if choice == "d":
+            break
+        elif choice == "s":
+            # Select current folder
+            folder_id = client.resolve_path(current_path)
+            if folder_id and current_path not in [f[1] for f in selected_folders]:
+                selected_folders.append((folder_id, current_path))
+                console.print(f"[green]✓ Added: {current_path}[/green]")
+            elif current_path in [f[1] for f in selected_folders]:
+                console.print("[yellow]Already selected[/yellow]")
+        elif choice == "0":
+            # Go up
+            if current_path != "/":
+                current_path = "/".join(current_path.rstrip("/").split("/")[:-1]) or "/"
+        elif choice.isdigit():
+            idx = int(choice) - 1
+            if 0 <= idx < len(folders):
+                folder = folders[idx]
+                if current_path == "/":
+                    current_path = f"/{folder.name}"
+                else:
+                    current_path = f"{current_path}/{folder.name}"
+            else:
+                console.print("[red]Invalid number[/red]")
+        else:
+            console.print("[red]Invalid choice[/red]")
+
+    # Save selected folders
+    if selected_folders:
+        for folder_id, folder_path in selected_folders:
+            add_allowed_folder(folder_id, folder_path)
+
+        console.print()
+        console.print(f"[green]✓ Access granted to {len(selected_folders)} folder(s):[/green]")
+        for _, path in selected_folders:
+            console.print(f"  📁 {path}")
+        console.print()
+        console.print("[dim]Now run: vectrola gdrive ingest <folder>[/dim]")
+    else:
+        console.print()
+        console.print("[yellow]No folders selected.[/yellow]")
+        console.print("[dim]You can browse later with: vectrola gdrive list[/dim]")
+
+
 @gdrive_app.command("auth")
 def gdrive_auth(
     logout: bool = typer.Option(False, "--logout", help="Remove stored credentials"),
+    skip_select: bool = typer.Option(False, "--skip-select", help="Skip folder selection after auth"),
 ):
     """
-    Authenticate with Google Drive.
+    Authenticate with Google Drive and select folders.
 
     Opens your browser for Google sign-in. After authorization,
-    you can access your Drive files with other gdrive commands.
+    prompts you to select which folders Vectrola can access.
     """
     try:
         from vectrola.gdrive import authenticate, logout as do_logout, is_authenticated
@@ -430,16 +596,58 @@ def gdrive_auth(
             console.print("[dim]No credentials to remove[/dim]")
         return
 
-    if is_authenticated():
-        console.print("[green]✓ Already authenticated with Google Drive[/green]")
-        console.print("[dim]Use --logout to sign out[/dim]")
-        return
+    already_authed = is_authenticated()
 
-    try:
-        authenticate()
-    except Exception as e:
-        console.print(f"[red]Authentication failed: {e}[/red]")
-        raise typer.Exit(1)
+    if already_authed:
+        console.print("[green]✓ Already authenticated with Google Drive[/green]")
+    else:
+        try:
+            authenticate()
+        except Exception as e:
+            console.print(f"[red]Authentication failed: {e}[/red]")
+            raise typer.Exit(1)
+
+    # After successful auth, prompt for folder selection
+    if not skip_select:
+        console.print()
+        console.print("[bold]Select folders to allow Vectrola access:[/bold]")
+        console.print()
+
+        # Try browser-based Google Picker first, fall back to CLI browser
+        import os
+        picker_client_id = os.getenv("GOOGLE_PICKER_CLIENT_ID", "")
+        api_key = os.getenv("GOOGLE_API_KEY", "")
+
+        if picker_client_id and api_key:
+            # Use browser-based Google Picker UI
+            try:
+                from vectrola.gdrive.picker import open_folder_picker
+                from vectrola.gdrive import add_allowed_folder, clear_allowed_folders
+
+                folders, access_token = open_folder_picker(picker_client_id, api_key)
+
+                if folders:
+                    clear_allowed_folders()
+                    for folder in folders:
+                        add_allowed_folder(folder['id'], folder['name'])
+
+                    console.print(f"\n[green]✓ Access granted to {len(folders)} folder(s):[/green]")
+                    for folder in folders:
+                        console.print(f"  📁 {folder['name']}")
+                    console.print()
+                    console.print("[dim]Now run: vectrola gdrive ingest <folder>[/dim]")
+                else:
+                    console.print("[yellow]No folders selected.[/yellow]")
+            except Exception as e:
+                console.print(f"[yellow]Browser picker failed: {e}[/yellow]")
+                console.print("[dim]Falling back to CLI folder browser...[/dim]")
+                console.print()
+                _browse_and_select_folders()
+        else:
+            # Fall back to CLI-based folder browser
+            console.print("[dim]Tip: Set GOOGLE_PICKER_CLIENT_ID and GOOGLE_API_KEY in .env for browser-based folder picker[/dim]")
+            console.print()
+            _browse_and_select_folders()
 
 
 @gdrive_app.command("setup")

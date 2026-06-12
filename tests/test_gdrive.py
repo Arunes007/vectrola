@@ -1089,6 +1089,281 @@ class TestDriveClientGetUserInfo:
 
 
 # =============================================================================
+# Write Operations Tests (Wiki Sync - Day 7)
+# =============================================================================
+
+
+class TestDriveClientCreateFolder:
+    """Tests for DriveClient.create_folder method."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mocked DriveClient."""
+        from vectrola.gdrive.client import DriveClient
+
+        mock_creds = MagicMock()
+        client = DriveClient(credentials=mock_creds)
+
+        mock_service = MagicMock()
+        client._service = mock_service
+
+        return client
+
+    def test_create_folder_at_root(self, mock_client):
+        """Test create_folder at root."""
+        mock_client._service.files().create().execute.return_value = {"id": "new_folder_id"}
+
+        result = mock_client.create_folder("TestFolder")
+
+        assert result == "new_folder_id"
+        # Verify create was called with correct metadata
+        mock_client._service.files().create.assert_called()
+
+    def test_create_folder_with_parent(self, mock_client):
+        """Test create_folder with parent ID."""
+        mock_client._service.files().create().execute.return_value = {"id": "new_folder_id"}
+
+        result = mock_client.create_folder("SubFolder", parent_id="parent123")
+
+        assert result == "new_folder_id"
+
+
+class TestDriveClientFindOrCreateFolder:
+    """Tests for DriveClient.find_or_create_folder method."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mocked DriveClient."""
+        from vectrola.gdrive.client import DriveClient
+
+        mock_creds = MagicMock()
+        client = DriveClient(credentials=mock_creds)
+
+        mock_service = MagicMock()
+        client._service = mock_service
+
+        return client
+
+    def test_root_path_returns_root(self, mock_client):
+        """Test that root path returns 'root'."""
+        assert mock_client.find_or_create_folder("/") == "root"
+        assert mock_client.find_or_create_folder("") == "root"
+        assert mock_client.find_or_create_folder("root") == "root"
+
+    def test_find_existing_folder(self, mock_client):
+        """Test finding an existing folder."""
+        mock_client._service.files().list().execute.return_value = {
+            "files": [{"id": "existing_folder_id"}]
+        }
+
+        result = mock_client.find_or_create_folder("/ExistingFolder")
+
+        assert result == "existing_folder_id"
+
+    def test_create_missing_folder(self, mock_client):
+        """Test creating a missing folder."""
+        # First search returns empty (folder doesn't exist)
+        mock_client._service.files().list().execute.return_value = {"files": []}
+        # Create returns new folder ID
+        mock_client._service.files().create().execute.return_value = {"id": "created_folder_id"}
+
+        result = mock_client.find_or_create_folder("/NewFolder")
+
+        assert result == "created_folder_id"
+        mock_client._service.files().create.assert_called()
+
+    def test_nested_folder_creation(self, mock_client):
+        """Test creating nested folder structure."""
+        # First part exists, second doesn't
+        mock_client._service.files().list().execute.side_effect = [
+            {"files": [{"id": "vectrola_id"}]},  # /Vectrola exists
+            {"files": []},  # /Vectrola/wiki doesn't exist
+        ]
+        mock_client._service.files().create().execute.return_value = {"id": "wiki_id"}
+
+        result = mock_client.find_or_create_folder("/Vectrola/wiki")
+
+        assert result == "wiki_id"
+
+
+class TestDriveClientUploadFile:
+    """Tests for DriveClient.upload_file method."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mocked DriveClient."""
+        from vectrola.gdrive.client import DriveClient
+
+        mock_creds = MagicMock()
+        client = DriveClient(credentials=mock_creds)
+
+        mock_service = MagicMock()
+        client._service = mock_service
+
+        return client
+
+    def test_upload_markdown_file(self, mock_client, tmp_path):
+        """Test uploading a markdown file."""
+        # Create temp file
+        test_file = tmp_path / "test.md"
+        test_file.write_text("# Test\n\nHello world")
+
+        mock_client._service.files().create().execute.return_value = {"id": "uploaded_id"}
+
+        with patch("googleapiclient.http.MediaFileUpload"):
+            result = mock_client.upload_file(test_file, "parent123")
+
+        assert result == "uploaded_id"
+
+    def test_upload_auto_detects_mime_type(self, mock_client, tmp_path):
+        """Test that upload auto-detects MIME type from extension."""
+        test_file = tmp_path / "test.json"
+        test_file.write_text('{"key": "value"}')
+
+        mock_client._service.files().create().execute.return_value = {"id": "uploaded_id"}
+
+        with patch("googleapiclient.http.MediaFileUpload") as mock_upload:
+            mock_client.upload_file(test_file, "parent123")
+            # Check that MediaFileUpload was called with json mime type
+            mock_upload.assert_called_once()
+            call_args = mock_upload.call_args
+            assert call_args.kwargs.get("mimetype") == "application/json"
+
+    def test_upload_with_custom_mime_type(self, mock_client, tmp_path):
+        """Test uploading with explicit MIME type."""
+        test_file = tmp_path / "test.txt"
+        test_file.write_text("plain text")
+
+        mock_client._service.files().create().execute.return_value = {"id": "uploaded_id"}
+
+        with patch("googleapiclient.http.MediaFileUpload") as mock_upload:
+            mock_client.upload_file(test_file, "parent123", mime_type="text/plain")
+            mock_upload.assert_called_once()
+            call_args = mock_upload.call_args
+            assert call_args.kwargs.get("mimetype") == "text/plain"
+
+
+class TestDriveClientUpdateFile:
+    """Tests for DriveClient.update_file method."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mocked DriveClient."""
+        from vectrola.gdrive.client import DriveClient
+
+        mock_creds = MagicMock()
+        client = DriveClient(credentials=mock_creds)
+
+        mock_service = MagicMock()
+        client._service = mock_service
+
+        return client
+
+    def test_update_existing_file(self, mock_client, tmp_path):
+        """Test updating an existing file."""
+        test_file = tmp_path / "test.md"
+        test_file.write_text("# Updated content")
+
+        mock_client._service.files().update().execute.return_value = {"id": "file123"}
+
+        with patch("googleapiclient.http.MediaFileUpload"):
+            result = mock_client.update_file("file123", test_file)
+
+        assert result == "file123"
+
+    def test_update_auto_detects_mime_type(self, mock_client, tmp_path):
+        """Test that update auto-detects MIME type."""
+        test_file = tmp_path / "styles.css"
+        test_file.write_text("body { color: red; }")
+
+        mock_client._service.files().update().execute.return_value = {"id": "file123"}
+
+        with patch("googleapiclient.http.MediaFileUpload") as mock_upload:
+            mock_client.update_file("file123", test_file)
+            mock_upload.assert_called_once()
+            call_args = mock_upload.call_args
+            assert call_args.kwargs.get("mimetype") == "text/css"
+
+
+class TestDriveClientFindFile:
+    """Tests for DriveClient.find_file method."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mocked DriveClient."""
+        from vectrola.gdrive.client import DriveClient
+
+        mock_creds = MagicMock()
+        client = DriveClient(credentials=mock_creds)
+
+        mock_service = MagicMock()
+        client._service = mock_service
+
+        return client
+
+    def test_find_existing_file(self, mock_client):
+        """Test finding an existing file by name."""
+        mock_client._service.files().list().execute.return_value = {
+            "files": [{"id": "found_file_id"}]
+        }
+
+        result = mock_client.find_file("README.md", "parent123")
+
+        assert result == "found_file_id"
+
+    def test_find_returns_none_when_not_found(self, mock_client):
+        """Test find_file returns None when file doesn't exist."""
+        mock_client._service.files().list().execute.return_value = {"files": []}
+
+        result = mock_client.find_file("nonexistent.md", "parent123")
+
+        assert result is None
+
+
+class TestDriveClientUploadOrUpdateFile:
+    """Tests for DriveClient.upload_or_update_file method."""
+
+    @pytest.fixture
+    def mock_client(self):
+        """Create a mocked DriveClient."""
+        from vectrola.gdrive.client import DriveClient
+
+        mock_creds = MagicMock()
+        client = DriveClient(credentials=mock_creds)
+
+        mock_service = MagicMock()
+        client._service = mock_service
+
+        return client
+
+    def test_uploads_new_file_when_not_exists(self, mock_client, tmp_path):
+        """Test that a new file is uploaded when it doesn't exist."""
+        test_file = tmp_path / "new.md"
+        test_file.write_text("# New file")
+
+        # find_file returns None (file doesn't exist)
+        with patch.object(mock_client, "find_file", return_value=None):
+            with patch.object(mock_client, "upload_file", return_value="new_id") as mock_upload:
+                result = mock_client.upload_or_update_file(test_file, "parent123")
+
+                assert result == "new_id"
+                mock_upload.assert_called_once_with(test_file, "parent123", None)
+
+    def test_updates_file_when_exists(self, mock_client, tmp_path):
+        """Test that existing file is updated."""
+        test_file = tmp_path / "existing.md"
+        test_file.write_text("# Updated content")
+
+        # find_file returns existing ID
+        with patch.object(mock_client, "find_file", return_value="existing_id"):
+            with patch.object(mock_client, "update_file", return_value="existing_id") as mock_update:
+                result = mock_client.upload_or_update_file(test_file, "parent123")
+
+                assert result == "existing_id"
+                mock_update.assert_called_once_with("existing_id", test_file, None)
+
+
+# =============================================================================
 # Picker Module Tests
 # =============================================================================
 

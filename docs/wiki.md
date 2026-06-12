@@ -340,4 +340,95 @@ The player uses HTML5 Audio API with `file://` protocol to play local MP3s.
 
 ## Privacy
 
-The wiki is **local-only** - markdown files on your disk. No cloud sync unless you configure Obsidian's sync.
+The wiki is **local-only** by default - markdown files on your disk. Use `--sync` to upload to your Google Drive for cross-device access.
+
+---
+
+## Cross-Device Sync
+
+Sync your wiki to Google Drive so it's available on all your devices. The wiki is uploaded to your personal Drive using the secure `drive.file` scope (Vectrola can only access files it creates).
+
+### Prerequisites
+
+1. **Google Drive authentication**: Run `vectrola gdrive auth` first
+2. **Re-authenticate if needed**: If you previously authenticated with read-only scope, you must re-authenticate:
+   ```bash
+   vectrola gdrive auth --logout
+   vectrola gdrive auth
+   ```
+
+### Generate & Sync
+
+```bash
+# Generate wiki locally AND upload to Google Drive
+vectrola wiki --sync
+
+# Custom Drive folder location
+vectrola wiki --sync --drive-path "/My Music/wiki"
+```
+
+**Default location:** `/Vectrola/wiki/` in your Google Drive root
+
+### What Gets Synced
+
+```
+My Drive/
+└── Vectrola/
+    └── wiki/
+        ├── README.md           # Home page
+        ├── Tracks/             # Individual songs
+        ├── Artists/            # Artist indexes
+        ├── Moods/              # Mood collections
+        ├── Themes/             # Theme collections
+        ├── Movies/             # Soundtrack collections
+        └── Eras/               # Decade-based collections
+```
+
+### Sync Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Device A (has music files)                                 │
+│                                                             │
+│  vectrola ingest ~/Music     # Index your library           │
+│  vectrola wiki --sync        # Generate & upload to GDrive  │
+│                                                             │
+└───────────────────────┬─────────────────────────────────────┘
+                        │
+                        ▼
+              ┌─────────────────┐
+              │  Google Drive   │
+              │  /Vectrola/wiki │
+              └────────┬────────┘
+                       │
+        ┌──────────────┴──────────────┐
+        ▼                             ▼
+┌───────────────────┐      ┌───────────────────┐
+│  Device B         │      │  Device C         │
+│  (Obsidian)       │      │  (Obsidian)       │
+│                   │      │                   │
+│  Pull via plugin  │      │  Pull via plugin  │
+│  Browse & play    │      │  Browse & play    │
+└───────────────────┘      └───────────────────┘
+```
+
+### Obsidian Plugin
+
+For the best cross-device experience, install the **Vectrola Sync** Obsidian plugin:
+
+- **Auto-pull**: Downloads wiki from Drive when vault opens
+- **Auto-sync**: Periodic background sync (configurable)
+- **Push changes**: Upload edits back to Drive
+
+See [Obsidian Plugin Documentation](obsidian-plugin.md) for setup instructions.
+
+### Manual Sync (Without Plugin)
+
+If you prefer not to use the plugin:
+
+1. Access Google Drive in your browser
+2. Navigate to `/Vectrola/wiki/`
+3. Download the folder
+4. Open in Obsidian
+
+**Note:** This requires manual re-download after each `vectrola wiki --sync`.

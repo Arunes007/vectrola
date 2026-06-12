@@ -362,3 +362,224 @@ class DriveClient:
         """
         about = self.service.about().get(fields="user").execute()
         return about.get("user", {})
+
+    # =========================================================================
+    # Write Operations (require drive.file scope)
+    # =========================================================================
+
+    def create_folder(
+        self,
+        name: str,
+        parent_id: Optional[str] = None,
+    ) -> str:
+        """Create a folder in Google Drive.
+
+        Args:
+            name: Folder name
+            parent_id: Parent folder ID (defaults to root)
+
+        Returns:
+            New folder ID
+        """
+        file_metadata = {
+            "name": name,
+            "mimeType": "application/vnd.google-apps.folder",
+        }
+
+        if parent_id:
+            file_metadata["parents"] = [parent_id]
+
+        folder = self.service.files().create(
+            body=file_metadata,
+            fields="id"
+        ).execute()
+
+        return folder.get("id")
+
+    def find_or_create_folder(self, path: str) -> str:
+        """Find or create a nested folder structure.
+
+        Args:
+            path: Drive path like "/Vectrola/wiki"
+
+        Returns:
+            Folder ID of the deepest folder
+        """
+        if path in ("/", "", "root"):
+            return "root"
+
+        # Normalize path
+        path = path.strip("/")
+        parts = [p for p in path.split("/") if p]
+
+        current_id = "root"
+
+        for part in parts:
+            # Search for existing folder
+            query = (
+                f"name = '{part}' and "
+                f"'{current_id}' in parents and "
+                f"mimeType = 'application/vnd.google-apps.folder' and "
+                f"trashed = false"
+            )
+
+            response = (
+                self.service.files()
+                .list(q=query, spaces="drive", fields="files(id)")
+                .execute()
+            )
+
+            files = response.get("files", [])
+            if files:
+                current_id = files[0]["id"]
+            else:
+                # Create the folder
+                current_id = self.create_folder(part, current_id)
+
+        return current_id
+
+    def upload_file(
+        self,
+        local_path: Path,
+        parent_id: str,
+        mime_type: Optional[str] = None,
+    ) -> str:
+        """Upload a file to Google Drive.
+
+        Args:
+            local_path: Local file path to upload
+            parent_id: Parent folder ID
+            mime_type: MIME type (auto-detected if None)
+
+        Returns:
+            File ID of uploaded file
+        """
+        from googleapiclient.http import MediaFileUpload
+
+        if mime_type is None:
+            # Auto-detect mime type
+            ext = local_path.suffix.lower()
+            mime_types = {
+                ".md": "text/markdown",
+                ".txt": "text/plain",
+                ".json": "application/json",
+                ".html": "text/html",
+                ".css": "text/css",
+                ".js": "application/javascript",
+            }
+            mime_type = mime_types.get(ext, "application/octet-stream")
+
+        file_metadata = {
+            "name": local_path.name,
+            "parents": [parent_id],
+        }
+
+        media = MediaFileUpload(
+            str(local_path),
+            mimetype=mime_type,
+            resumable=True,
+        )
+
+        file = self.service.files().create(
+            body=file_metadata,
+            media_body=media,
+            fields="id"
+        ).execute()
+
+        return file.get("id")
+
+    def update_file(
+        self,
+        file_id: str,
+        local_path: Path,
+        mime_type: Optional[str] = None,
+    ) -> str:
+        """Update an existing file on Google Drive.
+
+        Args:
+            file_id: Drive file ID to update
+            local_path: New file content path
+            mime_type: MIME type (auto-detected if None)
+
+        Returns:
+            Updated file ID
+        """
+        from googleapiclient.http import MediaFileUpload
+
+        if mime_type is None:
+            ext = local_path.suffix.lower()
+            mime_types = {
+                ".md": "text/markdown",
+                ".txt": "text/plain",
+                ".json": "application/json",
+                ".html": "text/html",
+                ".css": "text/css",
+                ".js": "application/javascript",
+            }
+            mime_type = mime_types.get(ext, "application/octet-stream")
+
+        media = MediaFileUpload(
+            str(local_path),
+            mimetype=mime_type,
+            resumable=True,
+        )
+
+        file = self.service.files().update(
+            fileId=file_id,
+            media_body=media,
+            fields="id"
+        ).execute()
+
+        return file.get("id")
+
+    def find_file(
+        self,
+        name: str,
+        parent_id: str,
+    ) -> Optional[str]:
+        """Find a file by name in a folder.
+
+        Args:
+            name: File name to search for
+            parent_id: Parent folder ID
+
+        Returns:
+            File ID if found, None otherwise
+        """
+        query = (
+            f"name = '{name}' and "
+            f"'{parent_id}' in parents and "
+            f"trashed = false"
+        )
+
+        response = (
+            self.service.files()
+            .list(q=query, spaces="drive", fields="files(id)")
+            .execute()
+        )
+
+        files = response.get("files", [])
+        return files[0]["id"] if files else None
+
+    def upload_or_update_file(
+        self,
+        local_path: Path,
+        parent_id: str,
+        mime_type: Optional[str] = None,
+    ) -> str:
+        """Upload a file, or update if it already exists.
+
+        Args:
+            local_path: Local file path
+            parent_id: Parent folder ID
+            mime_type: MIME type (auto-detected if None)
+
+        Returns:
+            File ID (new or updated)
+        """
+        existing_id = self.find_file(local_path.name, parent_id)
+
+        if existing_id:
+            return self.update_file(existing_id, local_path, mime_type)
+        else:
+            return self.upload_file(local_path, parent_id, mime_type)

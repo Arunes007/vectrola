@@ -10,6 +10,27 @@ from vectrola.storage.qdrant import get_db
 from vectrola.config import get_or_create_user_id
 
 
+def calculate_era(year) -> str:
+    """Calculate era label from year (fallback for tracks without era field)."""
+    if not year:
+        return "Timeless"
+    try:
+        year = int(year)
+    except (ValueError, TypeError):
+        return "Timeless"
+
+    if year < 1990:
+        return "Old Melodies"
+    elif year < 2000:
+        return "90s Nostalgia"
+    elif year < 2010:
+        return "Y2K Vibes"
+    elif year < 2020:
+        return "2010s Rewind"
+    else:
+        return "Fresh Hits"
+
+
 @dataclass
 class WikiPage:
     """A single wiki page."""
@@ -55,6 +76,7 @@ class WikiGenerator:
         self.moods_dir = self.output_dir / "Moods"
         self.themes_dir = self.output_dir / "Themes"
         self.movies_dir = self.output_dir / "Movies"
+        self.eras_dir = self.output_dir / "Eras"
 
     @property
     def library(self):
@@ -86,6 +108,7 @@ class WikiGenerator:
         self._generate_mood_pages(tracks)
         self._generate_theme_pages(tracks)
         self._generate_movie_pages(tracks)
+        self._generate_era_pages(tracks)
         self._generate_home_page(tracks)
 
         print()
@@ -100,6 +123,7 @@ class WikiGenerator:
             self.moods_dir,
             self.themes_dir,
             self.movies_dir,
+            self.eras_dir,
         ]:
             dir_path.mkdir(parents=True, exist_ok=True)
 
@@ -134,6 +158,7 @@ class WikiGenerator:
         album = payload.get("album", "")
         movie = payload.get("movie", "")
         year = payload.get("year", "")
+        era = payload.get("era") or calculate_era(year)  # Fallback to calculated
         composer = payload.get("composer", "")
         lyricist = payload.get("lyricist", "")
         moods = payload.get("moods", [])
@@ -152,6 +177,8 @@ class WikiGenerator:
             lines.append(f"movie: \"{movie}\"")
         if year:
             lines.append(f"year: {year}")
+        if era:
+            lines.append(f"era: \"{era}\"")
         if moods:
             lines.append(f"tags: [{', '.join(moods)}]")
         if file_path:
@@ -176,6 +203,12 @@ class WikiGenerator:
             lines.append("")
         elif album:
             lines.append(f"**Album:** {album}")
+            lines.append("")
+
+        # Era
+        if era:
+            era_link = f"[[Eras/{self._sanitize_filename(era)}|{era}]]"
+            lines.append(f"**Era:** {era_link}")
             lines.append("")
 
         # Credits
@@ -312,6 +345,30 @@ class WikiGenerator:
 
         print(f"   ✓ {len(movies_tracks)} movie pages")
 
+    def _generate_era_pages(self, tracks):
+        """Generate era index pages with interactive audio player."""
+        print(f"📅 Generating era pages...")
+
+        # Group tracks by era (calculate from year if not stored)
+        eras_tracks = defaultdict(list)
+        for track in tracks:
+            p = track.payload
+            era = p.get("era") or calculate_era(p.get("year"))
+            if era:
+                eras_tracks[era].append(p)
+
+        # Generate page for each era
+        for era, era_tracks in eras_tracks.items():
+            filename = self._sanitize_filename(era)
+            file_path = self.eras_dir / f"{filename}.md"
+
+            # Use audio player script for era pages
+            lines = [self._get_audio_player_script(era_tracks, era)]
+
+            file_path.write_text("\n".join(lines), encoding="utf-8")
+
+        print(f"   ✓ {len(eras_tracks)} era pages")
+
     def _generate_home_page(self, tracks):
         """Generate home page with stats."""
         print(f"🏠 Generating home page...")
@@ -323,6 +380,7 @@ class WikiGenerator:
         moods = set()
         themes = set()
         movies = set()
+        eras = set()
 
         for track in tracks:
             p = track.payload
@@ -331,6 +389,10 @@ class WikiGenerator:
             themes.update(p.get("themes", []))
             if p.get("movie"):
                 movies.add(p.get("movie"))
+            # Calculate era from year if not stored
+            era = p.get("era") or calculate_era(p.get("year"))
+            if era:
+                eras.add(era)
 
         lines = ["# 🎧 Vectrola Music Library", ""]
         lines.append("A semantic music knowledge graph powered by AI.")
@@ -343,6 +405,7 @@ class WikiGenerator:
         lines.append(f"- **Movies:** {len(movies)}")
         lines.append(f"- **Moods:** {len(moods)}")
         lines.append(f"- **Themes:** {len(themes)}")
+        lines.append(f"- **Eras:** {len(eras)}")
         lines.append("")
 
         lines.append("## 🗂️ Browse")
@@ -352,6 +415,7 @@ class WikiGenerator:
         lines.append("- [[Moods/|By Mood]]")
         lines.append("- [[Themes/|By Theme]]")
         lines.append("- [[Movies/|By Movie]]")
+        lines.append("- [[Eras/|By Era]]")
         lines.append("")
 
         lines.append("## 🔍 Search Tips")

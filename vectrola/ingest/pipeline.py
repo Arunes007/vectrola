@@ -42,6 +42,30 @@ def generate_track_id(
     return f"hash:{hash_digest}"
 
 
+def calculate_era(year: Optional[int]) -> str:
+    """
+    Calculate era label from release year.
+
+    Args:
+        year: Release year (e.g., 1995, 2003)
+
+    Returns:
+        Era label (e.g., "90s Nostalgia", "Y2K Vibes")
+    """
+    if not year:
+        return "Timeless"
+    if year < 1990:
+        return "Old Melodies"
+    elif year < 2000:
+        return "90s Nostalgia"
+    elif year < 2010:
+        return "Y2K Vibes"
+    elif year < 2020:
+        return "2010s Rewind"
+    else:
+        return "Fresh Hits"
+
+
 @dataclass
 class TrackAnalysis:
     """Complete analysis result for a track."""
@@ -53,6 +77,7 @@ class TrackAnalysis:
     artists: list[str] = field(default_factory=list)  # Singers
     album: str = ""
     year: Optional[int] = None
+    era: str = ""  # Calculated from year (e.g., "90s Nostalgia", "Y2K Vibes")
 
     # Bollywood specific
     movie: str = ""  # Film name (often = album for soundtracks)
@@ -100,6 +125,7 @@ class TrackAnalysis:
             "artists": self.artists,
             "album": self.album,
             "year": self.year,
+            "era": self.era,
             "movie": self.movie,
             "composer": self.composer,
             "lyricist": self.lyricist,
@@ -387,12 +413,16 @@ class IngestPipeline:
             title=title,
         )
 
+        # Calculate era from year
+        era = calculate_era(year)
+
         analysis = TrackAnalysis(
             file_path=file_path,
             title=title,
             artists=artists,
             album=album,
             year=year,
+            era=era,
             movie=movie,
             composer=composer,
             lyricist=lyricist,
