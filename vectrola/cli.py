@@ -1309,14 +1309,24 @@ def login():
     console.print(f"[green]✅ Logged in as {email}[/green]")
     console.print("[dim]   Your library will now sync across devices.[/dim]")
 
-    # Check if wiki exists with different owner
+    # Check if wiki exists with different owner - auto-regenerate
     wiki_owner_file = Path("./wiki/.wiki_owner")
     if wiki_owner_file.exists():
         old_owner = wiki_owner_file.read_text().strip()
         if old_owner != email:
             console.print()
-            console.print(f"[yellow]⚠️  Wiki was generated for '{old_owner}'[/yellow]")
-            console.print("[yellow]   Run 'vectrola wiki' to regenerate for your account.[/yellow]")
+            console.print(f"[yellow]Wiki was generated for '{old_owner}'. Regenerating for you...[/yellow]")
+            console.print()
+
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                console=console,
+                transient=True,
+            ) as progress:
+                progress.add_task("Generating wiki...", total=None)
+                from vectrola.storage.wiki import WikiGenerator
+                WikiGenerator().generate_all()
 
 
 @app.command()
@@ -1342,14 +1352,24 @@ def logout():
         session_path.unlink()
         console.print("[green]✅ Logged out. Switched to anonymous mode.[/green]")
 
-        # Check if wiki exists with the logged-out user
+        # Check if wiki exists with the logged-out user - auto-regenerate
         wiki_owner_file = Path("./wiki/.wiki_owner")
         if wiki_owner_file.exists() and old_user:
             owner = wiki_owner_file.read_text().strip()
             if owner == old_user:
                 console.print()
-                console.print(f"[yellow]⚠️  Wiki was generated for '{old_user}'[/yellow]")
-                console.print("[yellow]   Run 'vectrola wiki' to regenerate for anonymous user.[/yellow]")
+                console.print(f"[yellow]Wiki was generated for '{old_user}'. Regenerating for anonymous user...[/yellow]")
+                console.print()
+
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[progress.description]{task.description}"),
+                    console=console,
+                    transient=True,
+                ) as progress:
+                    progress.add_task("Generating wiki...", total=None)
+                    from vectrola.storage.wiki import WikiGenerator
+                    WikiGenerator().generate_all()
     else:
         console.print("[yellow]Not logged in.[/yellow]")
 
