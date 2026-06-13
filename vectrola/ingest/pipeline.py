@@ -280,6 +280,7 @@ class IngestPipeline:
         artist_str = artists[0] if artists else ""
 
         spotify_track = self.spotify_fetcher.get_best_match(title, artist_str)
+        spotify_duration_seconds = None  # Track Spotify's duration
         if spotify_track:
             # Capture spotify_id for track identification
             spotify_id = spotify_track.spotify_id
@@ -295,14 +296,39 @@ class IngestPipeline:
                 album = spotify_track.album
                 # For Bollywood, album is often the movie name
                 movie = spotify_track.album
+            # Convert duration from ms to seconds
+            if spotify_track.duration_ms:
+                spotify_duration_seconds = spotify_track.duration_ms / 1000.0
             metadata_source = "spotify"
         else:
-            log("Not found on Spotify")
+            log("Not found on Spotify, trying MusicBrainz...")
+            # Fallback to MusicBrainz for basic metadata
+            try:
+                mb_metadata = self.metadata_fetcher.fetch(title, artist_str)
+                if mb_metadata:
+                    if not artists and mb_metadata.artists:
+                        artists = mb_metadata.artists
+                        artist_str = artists[0]
+                        log(f"Found: {mb_metadata.title} by {artist_str}")
+                    if not year and mb_metadata.year:
+                        year = mb_metadata.year
+                    if not album and mb_metadata.album:
+                        album = mb_metadata.album
+                        movie = mb_metadata.album
+                    if not composer and mb_metadata.composer:
+                        composer = mb_metadata.composer
+                    if not lyricist and mb_metadata.lyricist:
+                        lyricist = mb_metadata.lyricist
+                    metadata_source = "musicbrainz"
+                else:
+                    log("Not found on MusicBrainz either")
+            except Exception as e:
+                log(f"MusicBrainz error: {e}")
 
         # ===========================================
-        # 3. Fetch lyrics from LRClib (now WITH artist from Spotify)
+        # 3. Fetch lyrics (Genius → LRClib → Whisper)
         # ===========================================
-        log("Fetching lyrics from LRClib...")
+        log("Fetching lyrics...")
         lyrics_result: Optional[LyricsResult] = None
 
         # Try with artist + title (artist from file tags OR Spotify)
@@ -330,7 +356,8 @@ class IngestPipeline:
             lyrics = lyrics_result.text
             lyrics_source = lyrics_result.source
             segments = lyrics_result.segments or []
-            duration_seconds = lyrics_result.duration_seconds
+            # Use LRClib duration if available, otherwise Spotify duration
+            duration_seconds = lyrics_result.duration_seconds or spotify_duration_seconds
 
             # LRClib album is often the movie name for Bollywood
             if not album and lyrics_result.album:
@@ -349,7 +376,7 @@ class IngestPipeline:
             lyrics = ""
             lyrics_source = ""
             segments = []
-            duration_seconds = None
+            duration_seconds = spotify_duration_seconds  # Use Spotify duration if no lyrics
             log("No lyrics found online")
 
         # ===========================================
@@ -369,31 +396,22 @@ class IngestPipeline:
             language = ""
 
         # ===========================================
-        # 6. Fetch composer/lyricist from MusicBrainz (if missing)
-        # ===========================================
-        if not composer or not lyricist:
-            log("Fetching composer/lyricist from MusicBrainz...")
-            try:
-                mb_metadata = self.metadata_fetcher.fetch(title, artist_str)
-                if mb_metadata:
-                    if not composer and mb_metadata.composer:
-                        composer = mb_metadata.composer
-                    if not lyricist and mb_metadata.lyricist:
-                        lyricist = mb_metadata.lyricist
-            except Exception as e:
-                log(f"MusicBrainz error: {e}")
-
-        # ===========================================
-        # 7. LLM synthesis (themes, mood, narrative)
+        # 6. LLM synthesis (themes, mood, narrative)
         # ===========================================
         if lyrics:
-            log("Running Ollama LLM synthesis...")
+            log("Running LLM synthesis...")
             synthesis = self.synthesizer.synthesize(lyrics)
             themes = synthesis.themes
             moods = synthesis.moods
             narrative = synthesis.narrative
             imagery = synthesis.imagery
-            log(f"Got {len(moods)} moods, {len(themes)} themes")
+
+            # Check for LLM errors
+            if moods and moods[0].startswith("["):
+                # Error indicator in moods
+                log(f"⚠ LLM Error: {narrative}")
+            else:
+                log(f"Got {len(moods)} moods, {len(themes)} themes")
         else:
             log("Skipping synthesis (no lyrics)")
             themes = []

@@ -12,6 +12,7 @@ class SpotifyTrack:
     title: str = ""
     artists: list[str] = field(default_factory=list)
     album: str = ""
+    album_id: str = ""  # Album ID for fetching release year
     year: Optional[int] = None
     duration_ms: Optional[int] = None
     spotify_id: str = ""
@@ -21,6 +22,7 @@ class SpotifyTrack:
             "title": self.title,
             "artists": self.artists,
             "album": self.album,
+            "album_id": self.album_id,
             "year": self.year,
             "duration_ms": self.duration_ms,
             "spotify_id": self.spotify_id,
@@ -44,6 +46,36 @@ class SpotifyFetcher:
             from spotapi import Song
             self._song_client = Song()
         return self._song_client
+
+    def _fetch_album_year(self, album_id: str) -> Optional[int]:
+        """
+        Fetch release year from album info.
+
+        The search API doesn't return release date, so we need a separate call.
+        """
+        if not album_id:
+            return None
+
+        try:
+            from spotapi import PublicAlbum
+
+            album = PublicAlbum(album_id)
+            info = album.get_album_info()
+
+            # Extract year from album data
+            album_data = info.get('data', {}).get('albumUnion', {})
+            date_info = album_data.get('date', {})
+            iso_string = date_info.get('isoString', '')
+
+            if iso_string:
+                year_match = re.match(r'(\d{4})', iso_string)
+                if year_match:
+                    return int(year_match.group(1))
+
+            return None
+        except Exception as e:
+            # Don't fail if album fetch fails - year is optional
+            return None
 
     def search(self, title: str, artist: str = "", limit: int = 5) -> list[SpotifyTrack]:
         """
@@ -85,13 +117,9 @@ class SpotifyFetcher:
                 album_data = track_data.get('albumOfTrack', {})
                 album_name = album_data.get('name', '')
 
-                # Try to extract year from release date
-                year = None
-                release_date = album_data.get('date', {}).get('isoString', '')
-                if release_date:
-                    year_match = re.match(r'(\d{4})', release_date)
-                    if year_match:
-                        year = int(year_match.group(1))
+                # Extract album ID for fetching release year later
+                album_uri = album_data.get('uri', '')
+                album_id = album_uri.split(':')[-1] if album_uri else ''
 
                 # Get duration
                 duration_ms = track_data.get('duration', {}).get('totalMilliseconds')
@@ -104,7 +132,8 @@ class SpotifyFetcher:
                     title=track_data.get('name', ''),
                     artists=artists,
                     album=album_name,
-                    year=year,
+                    album_id=album_id,
+                    year=None,  # Will be fetched separately if needed
                     duration_ms=duration_ms,
                     spotify_id=spotify_id,
                 ))
@@ -131,16 +160,28 @@ class SpotifyFetcher:
         if not tracks:
             return None
 
+        best_track = None
+
         # If we have an artist hint, try to find exact match
         if artist:
             artist_lower = artist.lower()
             for track in tracks:
                 for track_artist in track.artists:
                     if artist_lower in track_artist.lower():
-                        return track
+                        best_track = track
+                        break
+                if best_track:
+                    break
 
         # Otherwise return first result (usually most popular)
-        return tracks[0]
+        if not best_track:
+            best_track = tracks[0]
+
+        # Fetch year from album (separate API call)
+        if best_track and best_track.album_id:
+            best_track.year = self._fetch_album_year(best_track.album_id)
+
+        return best_track
 
 
 # Convenience function

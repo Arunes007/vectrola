@@ -93,23 +93,25 @@ Logout and return to anonymous mode.
 ```bash
 $ vectrola logout
 ✅ Logged out. Switched to anonymous mode.
-
-Wiki was generated for 'alice@example.com'. Regenerating for anonymous user...
+🗑️  Wiki deleted.
+🗑️  Google Drive access revoked.
 ```
 
-Your library data remains on the server but won't be accessible until you login again.
+By default, logout cleans up for privacy:
+- Deletes the wiki folder
+- Revokes Google Drive access
 
 **Options:**
 
 | Flag | Description |
 |------|-------------|
-| `--purge-wiki` | Delete the wiki folder instead of regenerating (for privacy) |
+| `--no-purge` | Keep wiki and Google Drive connected |
 
 ```bash
-# Delete wiki completely on logout (for privacy)
-$ vectrola logout --purge-wiki
+# Keep wiki and GDrive (e.g., logging back in soon)
+$ vectrola logout --no-purge
 ✅ Logged out. Switched to anonymous mode.
-🗑️  Wiki deleted.
+Wiki and Google Drive kept (--no-purge).
 ```
 
 ### `vectrola whoami`

@@ -19,7 +19,10 @@ try:
 except ImportError:
     pass
 
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.readonly",  # Read existing files
+    "https://www.googleapis.com/auth/drive.file",      # Create/upload files (wiki sync)
+]
 
 # Token storage location (XDG-compliant)
 TOKEN_DIR = Path.home() / ".config" / "vectrola"
@@ -216,15 +219,19 @@ def _save_credentials(credentials) -> None:
 
 
 def logout() -> bool:
-    """Remove stored credentials.
+    """Remove stored credentials and allowed folders list.
 
     Returns:
-        True if credentials were removed, False if none existed
+        True if anything was removed, False if nothing existed
     """
     removed = False
 
     if TOKEN_PATH.exists():
         TOKEN_PATH.unlink()
+        removed = True
+
+    if ALLOWED_FOLDERS_PATH.exists():
+        ALLOWED_FOLDERS_PATH.unlink()
         removed = True
 
     return removed

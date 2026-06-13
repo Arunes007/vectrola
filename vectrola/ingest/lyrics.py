@@ -30,8 +30,8 @@ class LyricsFetcher:
     Fetch lyrics from multiple sources with fallback.
 
     Priority:
-    1. LRClib (free, has synced lyrics)
-    2. Genius (using direct API, no lyricsgenius package)
+    1. Genius (best coverage for Bollywood)
+    2. LRClib (free, has synced lyrics)
     3. Whisper transcription (fallback)
     """
 
@@ -67,13 +67,14 @@ class LyricsFetcher:
         title = self._clean_title(title)
         artist = self._clean_artist(artist)
 
-        # Try LRClib first (free, has synced lyrics)
-        result = self._fetch_lrclib(artist, title)
-        if result:
-            return result
+        # Try Genius first (best coverage)
+        if self.genius_token:
+            result = self._fetch_genius_direct(artist, title)
+            if result:
+                return result
 
-        # Try Genius as fallback (direct API, no lyricsgenius package)
-        result = self._fetch_genius_direct(artist, title)
+        # Try LRClib as fallback (free, has synced lyrics)
+        result = self._fetch_lrclib(artist, title)
         if result:
             return result
 
@@ -96,7 +97,7 @@ class LyricsFetcher:
             if artist:
                 params["artist_name"] = artist
 
-            response = requests.get(url, params=params, timeout=30)
+            response = requests.get(url, params=params, timeout=10)  # Shorter timeout as fallback
 
             if response.status_code == 200:
                 data = response.json()

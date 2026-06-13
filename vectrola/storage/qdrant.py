@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 import uuid
 
 from qdrant_client import QdrantClient, models
@@ -44,10 +45,27 @@ class VectrolaDB:
     def client(self) -> QdrantClient:
         """Lazy connect to Qdrant with optional API key."""
         if self._client is None:
-            if self.api_key:
-                self._client = QdrantClient(url=self.url, api_key=self.api_key, timeout=30)
+            # Parse URL to handle remote Qdrant (Railway, etc.) correctly
+            # qdrant-client's url parameter adds :6333 by default, which breaks Railway
+            parsed = urlparse(self.url)
+            is_https = parsed.scheme == "https"
+            is_remote = is_https or (parsed.port and parsed.port != 6333)
+
+            if is_remote:
+                # Use host/port/https for remote Qdrant
+                host = parsed.hostname
+                port = parsed.port or (443 if is_https else 6333)
+                self._client = QdrantClient(
+                    host=host,
+                    port=port,
+                    https=is_https,
+                    api_key=self.api_key,
+                    timeout=30,
+                )
             else:
-                self._client = QdrantClient(url=self.url, timeout=30)
+                # Local Qdrant - use url directly
+                self._client = QdrantClient(url=self.url, api_key=self.api_key, timeout=30)
+
             self._ensure_collection()
         return self._client
 

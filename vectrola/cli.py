@@ -46,6 +46,7 @@ def ingest(
     Transcribes lyrics and extracts semantic metadata (themes, moods, narrative).
     """
     from vectrola.ingest.pipeline import IngestPipeline
+    from vectrola.services.failed_ingests import FailedIngestsManager, detect_error_stage
 
     # Collect files to process
     if path.is_file():
@@ -69,6 +70,7 @@ def ingest(
     print()
 
     pipeline = IngestPipeline(use_stems=not fast)
+    fm = FailedIngestsManager()
 
     # Process files with simple progress
     results = []
@@ -82,15 +84,39 @@ def ingest(
             moods_str = ", ".join(result.moods[:3]) if result.moods else "no moods"
             print(f"   ✓ Done: {moods_str}")
 
+            # Remove from failed list if it was there (successful re-ingest)
+            fm.remove_failed(f"local:{file}")
+
         except Exception as e:
             errors.append((file, str(e)))
             print(f"   ✗ Error: {e}")
+
+    # Save failures for retry
+    if errors:
+        for file_path, error_msg in errors:
+            fm.add_failed(
+                name=file_path.name,
+                source="local",
+                source_path=str(file_path),
+                error=error_msg,
+                error_stage=detect_error_stage(error_msg),
+            )
 
     # Summary
     print()
     print(f"✅ Processed: {len(results)} tracks")
     if errors:
         print(f"❌ Errors: {len(errors)} tracks")
+        console.print("[yellow]Failed tracks saved. Run 'vectrola retry' to retry.[/yellow]")
+
+    # Next steps
+    if results:
+        console.print()
+        console.print("[bold]Next steps:[/bold]")
+        console.print("  • Search your library:   [cyan]vectrola search \"romantic mood\"[/cyan]")
+        console.print("  • Generate Obsidian wiki: [cyan]vectrola wiki[/cyan]")
+        console.print("  • Sync wiki to Drive:    [cyan]vectrola wiki --sync[/cyan]")
+        console.print("  • View library stats:    [cyan]vectrola library stats[/cyan]")
 
 
 @app.command()
@@ -346,25 +372,97 @@ def wiki(
     console.print(f"[dim]2. Open folder as vault: {output.absolute()}[/dim]")
     console.print(f"[dim]3. Enable Graph View (Cmd+G) to see connections[/dim]")
 
+    # Suggest sync if not already synced
+    if not sync:
+        console.print()
+        console.print("[bold]Next step:[/bold]")
+        console.print("  • Sync wiki to Drive: [cyan]vectrola wiki --sync[/cyan]")
+
 
 def _upload_wiki_to_drive(client, wiki_dir: Path, drive_path: str):
-    """Upload wiki directory to Google Drive."""
+    """Upload wiki directory to Google Drive with smart caching and parallel uploads."""
     from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+    from .gdrive.sync_cache import (
+        load_sync_cache,
+        save_sync_cache,
+        file_needs_upload,
+        update_cached_file,
+        get_files_to_delete,
+        remove_cached_file,
+    )
+    from multiprocessing import Pool
+    import time
+
+    # Load sync cache
+    cache = load_sync_cache()
 
     # Create the drive folder structure
     console.print(f"  Creating folder: {drive_path}")
     root_folder_id = client.find_or_create_folder(drive_path)
 
-    # Collect all files to upload
+    # Collect all files and check which need uploading
+    all_files = []
     files_to_upload = []
+    skipped_count = 0
+
     for item in wiki_dir.rglob("*"):
         if item.is_file() and not item.name.startswith("."):
-            rel_path = item.relative_to(wiki_dir)
-            files_to_upload.append((item, rel_path))
+            rel_path = str(item.relative_to(wiki_dir))
+            all_files.append((item, rel_path))
 
-    console.print(f"  Uploading {len(files_to_upload)} files...")
+            # Check if file needs upload (hash comparison)
+            needs_upload, local_hash = file_needs_upload(cache, item, rel_path)
+            if needs_upload:
+                files_to_upload.append((item, rel_path, local_hash))
+            else:
+                skipped_count += 1
 
-    # Upload with progress
+    # Report what we're doing
+    total_files = len(all_files)
+    upload_count = len(files_to_upload)
+
+    if skipped_count > 0:
+        console.print(f"  [dim]Skipping {skipped_count} unchanged files[/dim]")
+
+    if upload_count == 0:
+        console.print(f"  [green]✓ All {total_files} files up to date![/green]")
+        return
+
+    console.print(f"  Uploading {upload_count} changed files...")
+
+    # Pre-create all folders first (sequential - folder creation is fast and needs ordering)
+    folder_cache = {".": root_folder_id}
+    folders_needed = set()
+    for _, rel_path, _ in files_to_upload:
+        parent_path = str(Path(rel_path).parent)
+        if parent_path != ".":
+            parts = parent_path.split("/")
+            for i in range(len(parts)):
+                folders_needed.add("/".join(parts[: i + 1]))
+
+    # Create folders in order (parents before children)
+    for folder_path in sorted(folders_needed, key=lambda x: x.count("/")):
+        if folder_path not in folder_cache:
+            full_path = f"{drive_path}/{folder_path}"
+            folder_cache[folder_path] = client.find_or_create_folder(full_path)
+
+    # Prepare upload tasks: (local_path_str, rel_path, local_hash, parent_id)
+    upload_tasks = []
+    for local_path, rel_path, local_hash in files_to_upload:
+        parent_path = str(Path(rel_path).parent)
+        parent_id = folder_cache.get(parent_path, root_folder_id)
+        upload_tasks.append((str(local_path), rel_path, local_hash, parent_id))
+
+    # Number of parallel workers (balance speed vs rate limits)
+    # 5-6 workers is the sweet spot for Google Drive API
+    NUM_WORKERS = min(5, upload_count)
+
+    failed_files = []
+    completed = 0
+
+    # Use process pool for true parallelism (avoids Google API client thread-safety issues)
+    from .gdrive.parallel_upload import init_worker, upload_single_file
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[bold blue]{task.description}"),
@@ -372,20 +470,43 @@ def _upload_wiki_to_drive(client, wiki_dir: Path, drive_path: str):
         TextColumn("{task.completed}/{task.total}"),
         transient=False,
     ) as progress:
-        task = progress.add_task("Uploading", total=len(files_to_upload))
+        task = progress.add_task("Uploading", total=upload_count)
 
-        for local_path, rel_path in files_to_upload:
-            # Get or create parent folder
-            parent_path = str(rel_path.parent)
-            if parent_path == ".":
-                parent_id = root_folder_id
-            else:
-                full_parent_path = f"{drive_path}/{parent_path}"
-                parent_id = client.find_or_create_folder(full_parent_path)
+        # Process pool with initializer (each process gets its own Drive client)
+        with Pool(processes=NUM_WORKERS, initializer=init_worker) as pool:
+            # Use imap_unordered for better progress tracking
+            for result in pool.imap_unordered(upload_single_file, upload_tasks):
+                success, rel_path, local_hash, result_data = result
 
-            # Upload or update the file
-            client.upload_or_update_file(local_path, parent_id)
-            progress.update(task, advance=1)
+                if success:
+                    # Update cache with drive file ID
+                    update_cached_file(cache, rel_path, local_hash, result_data)
+                else:
+                    failed_files.append((rel_path, result_data))
+
+                completed += 1
+                progress.update(task, advance=1)
+
+    # Handle deleted files (files in cache but not in current wiki)
+    current_rel_paths = {rel_path for _, rel_path in all_files}
+    deleted_files = get_files_to_delete(cache, current_rel_paths)
+    if deleted_files:
+        console.print(f"  [dim]Cleaning up {len(deleted_files)} deleted files from cache[/dim]")
+        for rel_path in deleted_files:
+            remove_cached_file(cache, rel_path)
+
+    # Save updated cache
+    save_sync_cache(cache)
+
+    # Report results
+    if failed_files:
+        console.print(f"\n[yellow]⚠ {len(failed_files)} file(s) failed to upload:[/yellow]")
+        for rel_path, error in failed_files[:5]:
+            console.print(f"  [dim]• {rel_path}: {error}[/dim]")
+        if len(failed_files) > 5:
+            console.print(f"  [dim]... and {len(failed_files) - 5} more[/dim]")
+    else:
+        console.print(f"  [green]✓ All {upload_count} files uploaded successfully![/green]")
 
 
 @app.command()
@@ -426,14 +547,27 @@ def status():
 
     # Check Qdrant (Day 2)
     try:
-        from qdrant_client import QdrantClient
+        from vectrola.storage.qdrant import get_db
+        from vectrola.config import get_config
+
+        config = get_config()
+        qdrant_url = config.qdrant_url
 
         try:
-            client = QdrantClient(url="http://localhost:6333", timeout=2)
-            client.get_collections()
-            checks.append(("Qdrant", "✓ connected", "green"))
-        except Exception:
-            checks.append(("Qdrant", "○ not running (Day 2)", "dim"))
+            db = get_db()
+            if db.is_connected():
+                # Show if local or remote
+                if "localhost" in qdrant_url or "127.0.0.1" in qdrant_url:
+                    checks.append(("Qdrant", "✓ connected (local)", "green"))
+                else:
+                    # Extract hostname for display
+                    from urllib.parse import urlparse
+                    host = urlparse(qdrant_url).hostname or qdrant_url
+                    checks.append(("Qdrant", f"✓ connected ({host})", "green"))
+            else:
+                checks.append(("Qdrant", f"✗ not reachable ({qdrant_url})", "red"))
+        except Exception as e:
+            checks.append(("Qdrant", f"✗ error: {e}", "red"))
     except ImportError:
         checks.append(("Qdrant", "○ not installed (Day 2)", "dim"))
 
@@ -473,6 +607,338 @@ def status():
         table.add_row(name, f"[{color}]{status}[/{color}]")
 
     console.print(table)
+
+
+# =============================================================================
+# Setup Wizard
+# =============================================================================
+
+
+@app.command()
+def setup(
+    skip_storage: bool = typer.Option(False, "--skip-storage", help="Skip storage setup"),
+    skip_llm: bool = typer.Option(False, "--skip-llm", help="Skip LLM setup"),
+    skip_gdrive: bool = typer.Option(False, "--skip-gdrive", help="Skip Google Drive setup"),
+    skip_user: bool = typer.Option(False, "--skip-user", help="Skip user setup"),
+):
+    """
+    Interactive setup wizard for Vectrola.
+
+    Configures storage backend, LLM provider, Google Drive, and user account.
+    Settings are saved to ~/.config/vectrola/config.json.
+
+    Re-run anytime to change settings. Use --skip-X flags to skip steps.
+    """
+    from vectrola.config import load_config, save_config, reset_config, CONFIG_PATH
+
+    console.print("[bold]🎧 Vectrola Setup Wizard[/bold]\n")
+
+    config = load_config()
+
+    # Step 1: Storage
+    if not skip_storage:
+        config = _setup_storage(config)
+
+    # Step 2: LLM
+    if not skip_llm:
+        config = _setup_llm(config)
+
+    # Step 3: GDrive
+    if not skip_gdrive:
+        config = _setup_gdrive(config)
+
+    # Step 4: User
+    if not skip_user:
+        config = _setup_user(config)
+
+    # Save and show summary
+    save_config(config)
+    reset_config()  # Clear cached config so next get_config() reads new values
+    _show_setup_summary(config)
+
+
+def _setup_storage(config):
+    """Step 1: Configure storage backend."""
+    console.print("[bold]Step 1/4: Storage Backend[/bold]")
+    console.print("─" * 25)
+    console.print()
+    console.print("  [1] Local (fastest, single device)")
+    console.print("      [dim]Requires: docker run -d -p 6333:6333 qdrant/qdrant[/dim]")
+    console.print()
+    console.print("  [2] Remote (sync across devices)")
+    console.print("      [dim]Supports: Railway, Qdrant Cloud, self-hosted[/dim]")
+    console.print()
+
+    current = "2" if config.storage_mode == "remote" else "1"
+    choice = typer.prompt("Choice", default=current)
+
+    if choice == "2":
+        config.storage_mode = "remote"
+        default_url = config.qdrant_url if config.qdrant_url != "http://localhost:6333" else ""
+        config.qdrant_url = typer.prompt("Qdrant URL", default=default_url)
+        api_key = typer.prompt("API Key (optional, press Enter to skip)", default="")
+        config.qdrant_api_key = api_key if api_key else None
+
+        # Test connection
+        console.print()
+        with console.status("Testing connection..."):
+            from vectrola.storage.qdrant import VectrolaDB
+            try:
+                db = VectrolaDB(url=config.qdrant_url, api_key=config.qdrant_api_key)
+                if db.is_connected():
+                    console.print("[green]✓ Connected[/green]")
+                else:
+                    raise Exception("Connection failed")
+            except Exception as e:
+                console.print(f"[red]✗ Connection failed: {e}[/red]")
+                if not typer.confirm("Continue anyway?", default=False):
+                    raise typer.Abort()
+    else:
+        config.storage_mode = "local"
+        config.qdrant_url = "http://localhost:6333"
+        config.qdrant_api_key = None
+
+        # Check if local Qdrant is running
+        console.print()
+        with console.status("Checking local Qdrant..."):
+            from vectrola.storage.qdrant import VectrolaDB
+            try:
+                db = VectrolaDB(url=config.qdrant_url)
+                if db.is_connected():
+                    console.print("[green]✓ Local Qdrant running[/green]")
+                else:
+                    raise Exception()
+            except:
+                console.print("[yellow]⚠ Local Qdrant not running[/yellow]")
+                console.print("[dim]Start with: docker run -d -p 6333:6333 qdrant/qdrant[/dim]")
+
+    console.print()
+    return config
+
+
+def _setup_llm(config):
+    """Step 2: Configure LLM provider."""
+    console.print("[bold]Step 2/4: LLM Provider[/bold]")
+    console.print("─" * 22)
+    console.print()
+    console.print("  [1] Ollama (free, local, private)")
+    console.print("  [2] OpenAI (cloud, paid)")
+    console.print("  [3] Anthropic (cloud, paid)")
+    console.print("  [4] None (skip mood/theme analysis)")
+    console.print()
+
+    provider_map = {"ollama": "1", "openai": "2", "anthropic": "3", "none": "4"}
+    current = provider_map.get(config.llm_provider, "1")
+    choice = typer.prompt("Choice", default=current)
+
+    if choice == "1":
+        config.llm_provider = "ollama"
+        config.llm_api_key = None
+
+        # Check Ollama and list available models
+        console.print()
+        try:
+            import ollama
+            models_response = ollama.list()
+            models = [m.get('name', m.get('model', '')) for m in models_response.get('models', [])]
+
+            if models:
+                console.print("[green]✓ Ollama running[/green]")
+                console.print()
+                console.print("Available models:")
+                for i, model in enumerate(models, 1):
+                    console.print(f"  [{i}] {model}")
+                console.print()
+
+                # Find current model index if it exists
+                current_idx = "1"
+                if config.llm_model:
+                    for i, m in enumerate(models, 1):
+                        if m == config.llm_model or m.startswith(config.llm_model.split(':')[0]):
+                            current_idx = str(i)
+                            break
+
+                model_choice = typer.prompt("Select model", default=current_idx)
+                try:
+                    idx = int(model_choice) - 1
+                    if 0 <= idx < len(models):
+                        config.llm_model = models[idx]
+                    else:
+                        config.llm_model = models[0]
+                except ValueError:
+                    # User typed a model name directly
+                    config.llm_model = model_choice
+
+                console.print(f"[green]✓ Using {config.llm_model}[/green]")
+            else:
+                console.print("[yellow]⚠ Ollama running but no models installed[/yellow]")
+                console.print("[dim]Install a model with: ollama pull llama3.2:1b[/dim]")
+                config.llm_model = "llama3.2:1b"  # Default, user needs to pull
+        except Exception as e:
+            console.print("[yellow]⚠ Ollama not running[/yellow]")
+            console.print("[dim]Start with: ollama serve[/dim]")
+            config.llm_model = "llama3.2:1b"
+
+    elif choice == "2":
+        config.llm_provider = "openai"
+        config.llm_api_key = typer.prompt("OpenAI API Key", hide_input=True)
+        config.llm_model = typer.prompt("Model", default="gpt-4o-mini")
+        console.print("[green]✓ OpenAI configured[/green]")
+
+    elif choice == "3":
+        config.llm_provider = "anthropic"
+        config.llm_api_key = typer.prompt("Anthropic API Key", hide_input=True)
+        config.llm_model = typer.prompt("Model", default="claude-3-haiku-20240307")
+        console.print("[green]✓ Anthropic configured[/green]")
+
+    else:
+        config.llm_provider = "none"
+        config.llm_model = None
+        config.llm_api_key = None
+        console.print("[dim]LLM analysis disabled. Moods/themes won't be extracted.[/dim]")
+
+    console.print()
+    return config
+
+
+def _setup_gdrive(config):
+    """Step 3: Configure Google Drive."""
+    console.print("[bold]Step 3/4: Google Drive[/bold]")
+    console.print("─" * 22)
+    console.print()
+    console.print("  [1] Skip (local files only)")
+    console.print("  [2] Connect (ingest from cloud)")
+    console.print()
+
+    current = "2" if config.gdrive_enabled else "1"
+    choice = typer.prompt("Choice", default=current)
+
+    if choice == "2":
+        config.gdrive_enabled = True
+
+        try:
+            from vectrola.gdrive import authenticate, is_authenticated
+
+            if is_authenticated():
+                console.print("[green]✓ Already authenticated[/green]")
+                if typer.confirm("Re-authenticate?", default=False):
+                    authenticate()
+            else:
+                console.print("Opening browser for authentication...")
+                authenticate()
+                console.print("[green]✓ Authenticated[/green]")
+
+            if typer.confirm("Select allowed folders?", default=False):
+                # Actually run the folder browser
+                _browse_and_select_folders()
+
+        except ImportError:
+            console.print("[red]✗ Google Drive not installed[/red]")
+            console.print("[dim]Install with: pip install vectrola[gdrive][/dim]")
+            config.gdrive_enabled = False
+    else:
+        config.gdrive_enabled = False
+
+    console.print()
+    return config
+
+
+def _setup_user(config):
+    """Step 4: Configure user account."""
+    from vectrola.config import get_current_user
+
+    console.print("[bold]Step 4/4: User Account[/bold]")
+    console.print("─" * 22)
+    console.print()
+
+    user_id, is_logged_in = get_current_user()
+
+    if is_logged_in:
+        console.print(f"[green]✓ Logged in as {user_id}[/green]")
+        config.user_mode = "login"
+    else:
+        console.print(f"[dim]Anonymous user: {user_id}[/dim]")
+        if typer.confirm("Login to sync across devices?", default=False):
+            email = typer.prompt("Email or username")
+            _do_setup_login(email)
+            config.user_mode = "login"
+        else:
+            config.user_mode = "anonymous"
+
+    console.print()
+    return config
+
+
+def _do_setup_login(email: str):
+    """Perform login during setup."""
+    import json
+    from datetime import datetime
+
+    email = email.strip().lower()
+    if not email or len(email) < 3:
+        console.print("[red]Invalid email/username[/red]")
+        return
+
+    session_path = Path.home() / ".config" / "vectrola" / "session.json"
+    session_path.parent.mkdir(parents=True, exist_ok=True)
+
+    session = {
+        "user_id": email,
+        "logged_in_at": datetime.utcnow().isoformat() + "Z"
+    }
+    session_path.write_text(json.dumps(session, indent=2))
+    console.print(f"[green]✓ Logged in as {email}[/green]")
+
+
+def _show_setup_summary(config):
+    """Show setup completion summary."""
+    from vectrola.config import CONFIG_PATH, get_current_user
+    from urllib.parse import urlparse
+
+    console.print("━" * 50)
+    console.print()
+    console.print("[bold green]✅ Setup complete![/bold green]")
+    console.print()
+    console.print(f"Config saved to: [dim]{CONFIG_PATH}[/dim]")
+    console.print()
+
+    table = Table(show_header=False, box=None)
+    table.add_column("", style="bold")
+    table.add_column("")
+
+    # Storage
+    if config.storage_mode == "remote":
+        host = urlparse(config.qdrant_url).hostname or config.qdrant_url
+        table.add_row("Storage", f"Remote ({host})")
+    else:
+        table.add_row("Storage", "Local")
+
+    # LLM
+    if config.llm_provider == "none":
+        table.add_row("LLM", "Disabled")
+    else:
+        table.add_row("LLM", f"{config.llm_provider.title()} ({config.llm_model})")
+
+    # GDrive
+    if config.gdrive_enabled:
+        table.add_row("GDrive", "Connected")
+    else:
+        table.add_row("GDrive", "Disabled")
+
+    # User
+    user_id, is_logged_in = get_current_user()
+    if is_logged_in:
+        table.add_row("User", f"{user_id} (logged in)")
+    else:
+        table.add_row("User", f"{user_id} (anonymous)")
+
+    console.print(table)
+    console.print()
+    console.print("[dim]Next steps:[/dim]")
+    console.print("  vectrola status          # Verify all components")
+    console.print("  vectrola ingest ./music  # Ingest local files")
+    if config.gdrive_enabled:
+        console.print("  vectrola gdrive ingest   # Ingest from Google Drive")
 
 
 # =============================================================================
@@ -784,8 +1250,10 @@ def gdrive_ingest(
         raise typer.Exit(1)
 
     from vectrola.ingest.pipeline import IngestPipeline
+    from vectrola.services.failed_ingests import FailedIngestsManager, detect_error_stage
 
     client = DriveClient()
+    fm = FailedIngestsManager()
 
     # List files to ingest
     console.print(f"[dim]Scanning {path}...[/dim]")
@@ -820,11 +1288,11 @@ def gdrive_ingest(
 
     try:
         for i, file in enumerate(files, 1):
-            console.print(f"[{i}/{total}] {file.name}", flush=True)
+            console.print(f"[{i}/{total}] {file.name}")
 
             try:
                 # Download file
-                console.print(f"   ↓ Downloading from Drive...", end="", flush=True)
+                console.print(f"   ↓ Downloading from Drive...", end="")
                 local_path = client.download_file(file, temp_dir)
                 console.print(" done")
 
@@ -840,6 +1308,9 @@ def gdrive_ingest(
                 moods_str = ", ".join(result.moods[:3]) if result.moods else "no moods"
                 console.print(f"   ✓ Done: {moods_str}")
 
+                # Remove from failed list if it was there (successful re-ingest)
+                fm.remove_failed(f"gdrive:{file.id}")
+
                 # Clean up this file immediately to save space
                 local_path.unlink()
 
@@ -851,11 +1322,33 @@ def gdrive_ingest(
         # Clean up temp directory
         shutil.rmtree(temp_dir, ignore_errors=True)
 
+    # Save failures for retry
+    if errors:
+        for file, error_msg in errors:
+            fm.add_failed(
+                name=file.name,
+                source="gdrive",
+                source_path=f"{file.parent_path}/{file.name}",
+                error=error_msg,
+                error_stage=detect_error_stage(error_msg),
+                gdrive_file_id=file.id,
+            )
+
     # Summary
     console.print()
     console.print(f"✅ Processed: {len(results)} tracks from Google Drive")
     if errors:
         console.print(f"❌ Errors: {len(errors)} tracks")
+        console.print("[yellow]Failed tracks saved. Run 'vectrola retry' to retry.[/yellow]")
+
+    # Next steps
+    if results:
+        console.print()
+        console.print("[bold]Next steps:[/bold]")
+        console.print("  • Search your library:   [cyan]vectrola search \"romantic mood\"[/cyan]")
+        console.print("  • Generate Obsidian wiki: [cyan]vectrola wiki[/cyan]")
+        console.print("  • Sync wiki to Drive:    [cyan]vectrola wiki --sync[/cyan]")
+        console.print("  • View library stats:    [cyan]vectrola library stats[/cyan]")
 
 
 @gdrive_app.command("status")
@@ -1081,6 +1574,32 @@ def gdrive_disallow(
 
     remove_allowed_folder(folder_id)
     console.print(f"[green]✓ Removed: {path}[/green]")
+
+
+@gdrive_app.command("revoke")
+def gdrive_revoke():
+    """
+    Revoke Google Drive access and delete stored credentials.
+
+    This disconnects Vectrola from your Google Drive. You'll need to
+    run 'vectrola gdrive auth' again to reconnect.
+
+    Use this when:
+    - Switching to a different Google account
+    - Troubleshooting authentication issues
+    - Privacy cleanup
+    """
+    try:
+        from vectrola.gdrive import logout as do_logout
+    except ImportError:
+        console.print("[red]Google Drive support not installed.[/red]")
+        raise typer.Exit(1)
+
+    if do_logout():
+        console.print("[green]✓ Google Drive access revoked.[/green]")
+        console.print("[dim]Run 'vectrola gdrive auth' to reconnect.[/dim]")
+    else:
+        console.print("[yellow]Google Drive not connected.[/yellow]")
 
 
 # =============================================================================
@@ -1309,42 +1828,39 @@ def login():
     console.print(f"[green]✅ Logged in as {email}[/green]")
     console.print("[dim]   Your library will now sync across devices.[/dim]")
 
-    # Check if wiki exists with different owner - auto-regenerate
-    wiki_owner_file = Path("./wiki/.wiki_owner")
-    if wiki_owner_file.exists():
-        old_owner = wiki_owner_file.read_text().strip()
-        if old_owner != email:
-            console.print()
-            console.print(f"[yellow]Wiki was generated for '{old_owner}'. Regenerating for you...[/yellow]")
-            console.print()
-
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                console=console,
-                transient=True,
-            ) as progress:
-                progress.add_task("Generating wiki...", total=None)
-                from vectrola.storage.wiki import WikiGenerator
-                WikiGenerator().generate_all()
+    # Check if setup has been run
+    from vectrola.config import CONFIG_PATH
+    if not CONFIG_PATH.exists():
+        console.print()
+        console.print("[yellow]Next step:[/yellow] Run [bold]vectrola setup[/bold] to configure storage, LLM, and Google Drive.")
+    else:
+        # Regenerate wiki for the logged-in user
+        console.print()
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            console=console,
+            transient=True,
+        ) as progress:
+            progress.add_task("Generating wiki...", total=None)
+            from vectrola.storage.wiki import WikiGenerator
+            WikiGenerator().generate_all()
 
 
 @app.command()
 def logout(
-    purge_wiki: bool = typer.Option(False, "--purge-wiki", help="Delete the wiki folder for privacy"),
+    no_purge: bool = typer.Option(False, "--no-purge", help="Keep wiki and Google Drive connected"),
 ):
     """
     Logout and switch to anonymous mode.
 
-    After logout, you'll use a device-local anonymous user ID.
-    Your library data remains on the server but won't be accessible
-    until you login again with the same email/username.
-
-    Use --purge-wiki to delete the wiki folder (for privacy when switching users).
+    By default, deletes the wiki and revokes Google Drive access for privacy.
+    Use --no-purge to keep them (e.g., if you plan to login again soon).
     """
     import json
 
     session_path = Path.home() / ".config" / "vectrola" / "session.json"
+    gdrive_token_path = Path.home() / ".config" / "vectrola" / "gdrive_token.json"
 
     old_user = None
     if session_path.exists():
@@ -1356,29 +1872,24 @@ def logout(
         session_path.unlink()
         console.print("[green]✅ Logged out. Switched to anonymous mode.[/green]")
 
-        # Handle wiki based on --purge-wiki flag
-        wiki_dir = Path("./wiki")
-        wiki_owner_file = wiki_dir / ".wiki_owner"
+        if no_purge:
+            console.print("[dim]Wiki and Google Drive kept (--no-purge).[/dim]")
+        else:
+            # Delete wiki
+            wiki_dir = Path("./wiki")
+            if wiki_dir.exists():
+                shutil.rmtree(wiki_dir)
+                console.print("[green]🗑️  Wiki deleted.[/green]")
 
-        if purge_wiki and wiki_dir.exists():
-            shutil.rmtree(wiki_dir)
-            console.print("[green]🗑️  Wiki deleted.[/green]")
-        elif wiki_owner_file.exists() and old_user:
-            owner = wiki_owner_file.read_text().strip()
-            if owner == old_user:
-                console.print()
-                console.print(f"[yellow]Wiki was generated for '{old_user}'. Regenerating for anonymous user...[/yellow]")
-                console.print()
-
-                with Progress(
-                    SpinnerColumn(),
-                    TextColumn("[progress.description]{task.description}"),
-                    console=console,
-                    transient=True,
-                ) as progress:
-                    progress.add_task("Generating wiki...", total=None)
-                    from vectrola.storage.wiki import WikiGenerator
-                    WikiGenerator().generate_all()
+            # Revoke Google Drive
+            try:
+                from vectrola.gdrive import logout as gdrive_logout
+                if gdrive_logout():
+                    console.print("[green]🗑️  Google Drive access revoked.[/green]")
+            except ImportError:
+                if gdrive_token_path.exists():
+                    gdrive_token_path.unlink()
+                    console.print("[green]🗑️  Google Drive access revoked.[/green]")
     else:
         console.print("[yellow]Not logged in.[/yellow]")
 
@@ -1400,6 +1911,132 @@ def whoami():
     else:
         console.print(f"[bold yellow]Anonymous user:[/bold yellow] {user_id}")
         console.print("[dim](Single device only. Run 'vectrola login' to sync across devices.)[/dim]")
+
+
+@app.command()
+def retry(
+    list_failed: bool = typer.Option(False, "--list", "-l", help="List failed tracks"),
+    clear: bool = typer.Option(False, "--clear", help="Clear all failed tracks"),
+):
+    """
+    Retry failed ingestions.
+
+    Tracks that failed during previous ingestion are saved and can be retried.
+    Use --list to see failed tracks, --clear to remove them.
+    """
+    from vectrola.services.failed_ingests import FailedIngestsManager, detect_error_stage
+
+    fm = FailedIngestsManager()
+
+    # List mode
+    if list_failed:
+        failed = fm.get_failed()
+        if not failed:
+            console.print("[green]No failed tracks.[/green]")
+            return
+
+        console.print(f"[bold]Failed tracks ({len(failed)}):[/bold]\n")
+        for i, f in enumerate(failed, 1):
+            console.print(f"  {i}. {f['name']} ({f['source']})")
+            console.print(f"     [red]Error:[/red] {f['error']}")
+            console.print(f"     [dim]Stage: {f['error_stage']} | Attempts: {f['attempts']} | {f['failed_at']}[/dim]")
+            console.print()
+        return
+
+    # Clear mode
+    if clear:
+        count = fm.clear()
+        console.print(f"[green]Cleared {count} failed track(s).[/green]")
+        return
+
+    # Retry mode
+    failed = fm.get_failed()
+    if not failed:
+        console.print("[green]No failed tracks to retry.[/green]")
+        return
+
+    console.print(f"[bold]🔄 Retrying {len(failed)} failed track(s)...[/bold]\n")
+
+    from vectrola.ingest.pipeline import IngestPipeline
+    pipeline = IngestPipeline()
+
+    recovered = 0
+    still_failing = []
+
+    for i, f in enumerate(failed, 1):
+        console.print(f"[{i}/{len(failed)}] {f['name']}")
+
+        try:
+            if f["source"] == "gdrive":
+                # Re-download from GDrive and process
+                from vectrola.gdrive import DriveClient
+                from dataclasses import dataclass
+
+                client = DriveClient()
+
+                with tempfile.TemporaryDirectory() as temp_dir:
+                    # Create DriveFile-like object for download
+                    @dataclass
+                    class DriveFileRetry:
+                        id: str
+                        name: str
+                        parent_path: str
+                        mime_type: str = "audio/mpeg"
+
+                    drive_file = DriveFileRetry(
+                        id=f["gdrive_file_id"],
+                        name=f["name"],
+                        parent_path=f["source_path"].rsplit("/", 1)[0] if "/" in f["source_path"] else "",
+                    )
+
+                    console.print("   ↓ Downloading from Drive...", end="")
+                    local_path = client.download_file(drive_file, Path(temp_dir))
+                    console.print(" done")
+
+                    result = pipeline.process_track(
+                        local_path,
+                        write_file_tags=False,
+                        gdrive_file_id=f["gdrive_file_id"],
+                        gdrive_path=f["source_path"],
+                    )
+
+                    moods_str = ", ".join(result.moods[:3]) if result.moods else "no moods"
+                    console.print(f"   [green]✓ Done: {moods_str}[/green]")
+
+            else:
+                # Local file - just re-process
+                local_path = Path(f["source_path"])
+                if not local_path.exists():
+                    raise FileNotFoundError(f"File not found: {local_path}")
+
+                result = pipeline.process_track(local_path, write_file_tags=True)
+                moods_str = ", ".join(result.moods[:3]) if result.moods else "no moods"
+                console.print(f"   [green]✓ Done: {moods_str}[/green]")
+
+            # Success - remove from failed list
+            fm.remove_failed(f["id"])
+            recovered += 1
+
+        except Exception as e:
+            console.print(f"   [red]✗ Error: {e}[/red]")
+            # Update the failed entry with new error and increment attempts
+            fm.add_failed(
+                name=f["name"],
+                source=f["source"],
+                source_path=f["source_path"],
+                error=str(e),
+                error_stage=detect_error_stage(str(e)),
+                gdrive_file_id=f.get("gdrive_file_id"),
+            )
+            still_failing.append(f)
+
+    # Summary
+    console.print()
+    if recovered:
+        console.print(f"[green]✅ Recovered: {recovered} track(s)[/green]")
+    if still_failing:
+        console.print(f"[red]❌ Still failing: {len(still_failing)} track(s)[/red]")
+        console.print("[dim]Run 'vectrola retry --list' to see details.[/dim]")
 
 
 @app.command("migrate-user")

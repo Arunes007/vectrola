@@ -415,9 +415,11 @@ class DriveClient:
         current_id = "root"
 
         for part in parts:
+            # Escape single quotes in folder name (Google Drive query syntax)
+            escaped_part = part.replace("'", "\\'")
             # Search for existing folder
             query = (
-                f"name = '{part}' and "
+                f"name = '{escaped_part}' and "
                 f"'{current_id}' in parents and "
                 f"mimeType = 'application/vnd.google-apps.folder' and "
                 f"trashed = false"
@@ -546,8 +548,10 @@ class DriveClient:
         Returns:
             File ID if found, None otherwise
         """
+        # Escape single quotes in filename (Google Drive query syntax)
+        escaped_name = name.replace("'", "\\'")
         query = (
-            f"name = '{name}' and "
+            f"name = '{escaped_name}' and "
             f"'{parent_id}' in parents and "
             f"trashed = false"
         )

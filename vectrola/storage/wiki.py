@@ -607,37 +607,42 @@ class WikiGenerator:
 
             // Day 7: Try GDrive first, then fall back to local file
             if (track.gdrive_id) {{
-                // Stream from Google Drive using stored OAuth token
+                // Stream from Google Drive using Vectrola Sync plugin API
                 console.log('Playing from GDrive:', track.gdrive_id);
 
                 try {{
-                    // Read the OAuth token from ~/.config/vectrola/gdrive_token.json
-                    const fs = require('fs');
-                    const path = require('path');
-                    const os = require('os');
+                    // Use plugin API (secure - token never exposed)
+                    const plugin = app.plugins.plugins['vectrola-sync'];
+                    if (plugin && plugin.api && plugin.api.isAuthenticated()) {{
+                        const arrayBuffer = await plugin.api.fetchDriveFile(track.gdrive_id);
+                        const blob = new Blob([arrayBuffer], {{ type: 'audio/mpeg' }});
+                        const blobUrl = URL.createObjectURL(blob);
+                        player.audio.src = blobUrl;
+                        console.log('Playing via plugin API');
+                    }} else {{
+                        // Fallback: Try CLI token (~/.config/vectrola/gdrive_token.json)
+                        const fs = require('fs');
+                        const path = require('path');
+                        const os = require('os');
 
-                    const tokenPath = path.join(os.homedir(), '.config', 'vectrola', 'gdrive_token.json');
-                    const tokenData = JSON.parse(fs.readFileSync(tokenPath, 'utf8'));
-                    const accessToken = tokenData.token;
+                        const tokenPath = path.join(os.homedir(), '.config', 'vectrola', 'gdrive_token.json');
+                        const tokenData = JSON.parse(fs.readFileSync(tokenPath, 'utf8'));
+                        const accessToken = tokenData.token;
 
-                    // Fetch from Google Drive API with auth
-                    const response = await fetch(
-                        `https://www.googleapis.com/drive/v3/files/${{track.gdrive_id}}?alt=media`,
-                        {{
-                            headers: {{
-                                'Authorization': `Bearer ${{accessToken}}`
-                            }}
+                        const response = await fetch(
+                            `https://www.googleapis.com/drive/v3/files/${{track.gdrive_id}}?alt=media`,
+                            {{ headers: {{ 'Authorization': `Bearer ${{accessToken}}` }} }}
+                        );
+
+                        if (!response.ok) {{
+                            throw new Error(`GDrive fetch failed: ${{response.status}}`);
                         }}
-                    );
 
-                    if (!response.ok) {{
-                        throw new Error(`GDrive fetch failed: ${{response.status}}`);
+                        const arrayBuffer = await response.arrayBuffer();
+                        const blob = new Blob([arrayBuffer], {{ type: 'audio/mpeg' }});
+                        player.audio.src = URL.createObjectURL(blob);
+                        console.log('Playing via CLI token');
                     }}
-
-                    const arrayBuffer = await response.arrayBuffer();
-                    const blob = new Blob([arrayBuffer], {{ type: 'audio/mpeg' }});
-                    const blobUrl = URL.createObjectURL(blob);
-                    player.audio.src = blobUrl;
 
                 }} catch (gdriveError) {{
                     console.error('GDrive playback failed, trying local:', gdriveError);

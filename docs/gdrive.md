@@ -141,10 +141,20 @@ Authenticate with Google Drive.
 ```bash
 # Sign in (opens browser)
 vectrola gdrive auth
-
-# Sign out (removes stored credentials)
-vectrola gdrive auth --logout
 ```
+
+### `vectrola gdrive revoke`
+
+Revoke Google Drive access (removes token and allowed folders).
+
+```bash
+vectrola gdrive revoke
+```
+
+Use this when:
+- Switching to a different Google account
+- Troubleshooting authentication issues  
+- Privacy cleanup
 
 ### `vectrola gdrive status`
 
