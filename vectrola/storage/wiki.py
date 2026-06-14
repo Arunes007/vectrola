@@ -527,14 +527,18 @@ class WikiGenerator:
         Returns:
             Vectrola code block as a string (JSON config for the plugin)
         """
-        # Build playlist data with GDrive IDs
+        # Build playlist data with GDrive IDs, duration, and artwork
         playlist = []
+        total_duration_ms = 0
+
         for i, p in enumerate(tracks):
             title = p.get("title", "Unknown")
             artists = p.get("artists", [])
             file_path = p.get("file_path", "")
             track_link = self._sanitize_filename(title)
             track_id = p.get("track_id", "")
+            # Duration: prefer duration_ms, fallback to duration_seconds * 1000
+            duration_ms = p.get("duration_ms") or int((p.get("duration_seconds") or 0) * 1000)
 
             # Get GDrive ID from library if available (Day 7)
             gdrive_id = None
@@ -549,21 +553,88 @@ class WikiGenerator:
                 "id": f"track-{i}",
                 "title": title,
                 "artist": ", ".join(artists[:1]) if artists else "Unknown",
+                "duration": self._format_duration(duration_ms),
+                "artwork_url": p.get("album_art_url"),  # From Spotify
                 "path": file_path,
                 "gdrive_id": gdrive_id,  # Day 7
                 "track_id": track_id,    # Day 7
                 "link": track_link,
             })
+            total_duration_ms += duration_ms or 0
+
+        # Determine artwork for the page
+        artwork = self._get_page_artwork(tracks, page_title)
 
         # Create config object for the plugin
         config = {
             "playlist": playlist,
             "title": page_title,
+            "artwork": artwork,
+            "total_duration": self._format_duration(total_duration_ms),
+            "track_count": len(playlist),
         }
 
         return f'''```vectrola
 {json.dumps(config, indent=2, ensure_ascii=False)}
 ```'''
+
+    def _get_page_artwork(self, tracks: List[dict], page_title: str) -> dict:
+        """
+        Get artwork for the page - from first track or generate gradient.
+
+        Args:
+            tracks: List of track payload dictionaries
+            page_title: Title of the page (for mood-based gradients)
+
+        Returns:
+            Dict with artwork info (url and type, or gradient and type)
+        """
+        # Try to get album art from first track
+        for p in tracks[:1]:
+            album_art = p.get("album_art_url")
+            if album_art:
+                return {"url": album_art, "type": "album"}
+
+        # Generate mood-based gradient
+        mood_gradients = {
+            "melancholic": ["#1a1a2e", "#16213e", "#0f3460"],
+            "sad": ["#1a1a2e", "#16213e", "#0f3460"],
+            "romantic": ["#e63946", "#f4a261"],
+            "love": ["#e63946", "#f4a261"],
+            "upbeat": ["#f72585", "#7209b7", "#3a0ca3"],
+            "party": ["#f72585", "#7209b7", "#3a0ca3"],
+            "dance": ["#f72585", "#7209b7", "#3a0ca3"],
+            "chill": ["#90e0ef", "#00b4d8", "#0077b6"],
+            "relax": ["#90e0ef", "#00b4d8", "#0077b6"],
+            "peaceful": ["#90e0ef", "#00b4d8", "#0077b6"],
+        }
+
+        lower = page_title.lower()
+        for mood, colors in mood_gradients.items():
+            if mood in lower:
+                return {"gradient": colors, "type": "gradient"}
+
+        return {"type": "none"}
+
+    def _format_duration(self, ms) -> str:
+        """
+        Format milliseconds to M:SS or H:MM:SS.
+
+        Args:
+            ms: Duration in milliseconds
+
+        Returns:
+            Formatted duration string (e.g., "3:45" or "1:02:30")
+        """
+        if not ms:
+            return ""
+        seconds = int(ms / 1000)
+        if seconds >= 3600:
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
+            secs = seconds % 60
+            return f"{hours}:{minutes:02d}:{secs:02d}"
+        return f"{seconds // 60}:{seconds % 60:02d}"
 
     def _sanitize_filename(self, name: str) -> str:
         """Sanitize name for filename."""
