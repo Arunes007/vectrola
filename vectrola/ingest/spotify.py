@@ -16,6 +16,7 @@ class SpotifyTrack:
     year: Optional[int] = None
     duration_ms: Optional[int] = None
     spotify_id: str = ""
+    album_art_url: Optional[str] = None  # Album cover art URL
 
     def to_dict(self) -> dict:
         return {
@@ -26,6 +27,7 @@ class SpotifyTrack:
             "year": self.year,
             "duration_ms": self.duration_ms,
             "spotify_id": self.spotify_id,
+            "album_art_url": self.album_art_url,
         }
 
 
@@ -121,6 +123,10 @@ class SpotifyFetcher:
                 album_uri = album_data.get('uri', '')
                 album_id = album_uri.split(':')[-1] if album_uri else ''
 
+                # Extract album cover art URL
+                cover_art_sources = album_data.get('coverArt', {}).get('sources', [])
+                album_art_url = cover_art_sources[0].get('url') if cover_art_sources else None
+
                 # Get duration
                 duration_ms = track_data.get('duration', {}).get('totalMilliseconds')
 
@@ -136,6 +142,7 @@ class SpotifyFetcher:
                     year=None,  # Will be fetched separately if needed
                     duration_ms=duration_ms,
                     spotify_id=spotify_id,
+                    album_art_url=album_art_url,
                 ))
 
             return tracks

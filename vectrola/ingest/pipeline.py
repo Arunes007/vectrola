@@ -117,6 +117,9 @@ class TrackAnalysis:
     gdrive_file_id: Optional[str] = None  # Google Drive file ID for playback
     gdrive_path: Optional[str] = None  # Original path in Google Drive
 
+    # Album art
+    album_art_url: Optional[str] = None  # Spotify album cover art URL
+
     def to_dict(self) -> dict:
         """Convert to dictionary for storage."""
         return {
@@ -148,6 +151,8 @@ class TrackAnalysis:
             # Cloud storage (Day 7)
             "gdrive_file_id": self.gdrive_file_id,
             "gdrive_path": self.gdrive_path,
+            # Album art
+            "album_art_url": self.album_art_url,
         }
 
 
@@ -281,9 +286,13 @@ class IngestPipeline:
 
         spotify_track = self.spotify_fetcher.get_best_match(title, artist_str)
         spotify_duration_seconds = None  # Track Spotify's duration
+        album_art_url = None  # Track album art from Spotify
         if spotify_track:
             # Capture spotify_id for track identification
             spotify_id = spotify_track.spotify_id
+
+            # Capture album art URL
+            album_art_url = spotify_track.album_art_url
 
             # Get artist from Spotify if we don't have one
             if not artists and spotify_track.artists:
@@ -460,6 +469,8 @@ class IngestPipeline:
             # Cloud storage (Day 7)
             gdrive_file_id=gdrive_file_id,
             gdrive_path=gdrive_path,
+            # Album art
+            album_art_url=album_art_url,
         )
 
         # ===========================================

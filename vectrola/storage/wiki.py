@@ -549,12 +549,17 @@ class WikiGenerator:
             if not gdrive_id:
                 gdrive_id = p.get("gdrive_file_id")
 
+            # Get first mood for gradient fallback
+            moods = p.get("moods", [])
+            first_mood = moods[0] if moods else None
+
             playlist.append({
                 "id": f"track-{i}",
                 "title": title,
                 "artist": ", ".join(artists[:1]) if artists else "Unknown",
                 "duration": self._format_duration(duration_ms),
                 "artwork_url": p.get("album_art_url"),  # From Spotify
+                "mood": first_mood,  # For gradient fallback in player
                 "path": file_path,
                 "gdrive_id": gdrive_id,  # Day 7
                 "track_id": track_id,    # Day 7
