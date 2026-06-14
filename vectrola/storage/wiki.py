@@ -557,6 +557,7 @@ class WikiGenerator:
                 "id": f"track-{i}",
                 "title": title,
                 "artist": ", ".join(artists[:1]) if artists else "Unknown",
+                "album": p.get("album", ""),  # From Qdrant
                 "duration": self._format_duration(duration_ms),
                 "artwork_url": p.get("album_art_url"),  # From Spotify
                 "mood": first_mood,  # For gradient fallback in player
