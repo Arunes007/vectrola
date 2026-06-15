@@ -33,6 +33,7 @@ CLAUDE.md
 docs/day3-clap.md
 docs/day7-*.md
 docs/day8-*.md
+todo.md
 
 # Test artifacts
 .pytest_cache/
