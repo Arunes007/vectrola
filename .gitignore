@@ -35,6 +35,9 @@ docs/day7-*.md
 docs/day8-*.md
 todo.md
 
+# Internal scripts
+scripts/migrate_*.py
+
 # Test artifacts
 .pytest_cache/
 .coverage
