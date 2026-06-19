@@ -6,6 +6,43 @@ from typing import Any, Optional
 import json
 
 
+def has_embedded_artwork(file_path: Path) -> bool:
+    """
+    Check if audio file has embedded album art.
+
+    Args:
+        file_path: Path to the audio file
+
+    Returns:
+        True if file has embedded album art
+    """
+    from mutagen import File
+    from mutagen.id3 import ID3
+    from mutagen.flac import FLAC
+
+    file_path = Path(file_path)
+
+    try:
+        if file_path.suffix.lower() == ".mp3":
+            tags = ID3(file_path)
+            # APIC = Attached Picture
+            return any(key.startswith("APIC") for key in tags.keys())
+
+        elif file_path.suffix.lower() == ".flac":
+            flac = FLAC(file_path)
+            return len(flac.pictures) > 0
+
+        elif file_path.suffix.lower() in [".m4a", ".mp4"]:
+            audio = File(file_path)
+            # covr = cover art in MP4
+            return "covr" in audio.tags if audio and audio.tags else False
+
+    except Exception:
+        pass
+
+    return False
+
+
 @dataclass
 class FileTags:
     """Tags read from an audio file."""

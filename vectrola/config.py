@@ -6,6 +6,19 @@ from typing import Optional, Tuple
 import os
 import uuid
 import json
+import platform
+
+
+def get_device_id() -> str:
+    """
+    Get unique device identifier (hostname).
+
+    Used for multi-device source tracking in the sources schema.
+
+    Returns:
+        Device hostname (e.g., "My-Macbook", "iPhone-Arun")
+    """
+    return platform.node()
 
 # Load environment variables from .env file if it exists
 try:

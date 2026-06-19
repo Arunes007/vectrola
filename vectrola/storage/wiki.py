@@ -51,10 +51,7 @@ class WikiGenerator:
     - Themes
     - Movies/Albums
 
-    Day 7 additions:
-    - GDrive playback support (streams from Google Drive when available)
-    - Falls back to local file playback
-    - Uses UserLibrary for track source mappings
+    Supports both local file and GDrive playback (from Qdrant payload).
     """
 
     def __init__(self, output_dir: Path = Path("./wiki")):
@@ -67,9 +64,6 @@ class WikiGenerator:
         self.output_dir = Path(output_dir)
         self.db = get_db()
 
-        # User library for GDrive mappings (Day 7)
-        self._library = None
-
         # Subdirectories
         self.tracks_dir = self.output_dir / "Tracks"
         self.artists_dir = self.output_dir / "Artists"
@@ -77,17 +71,6 @@ class WikiGenerator:
         self.themes_dir = self.output_dir / "Themes"
         self.movies_dir = self.output_dir / "Movies"
         self.eras_dir = self.output_dir / "Eras"
-
-    @property
-    def library(self):
-        """Lazy load user library."""
-        if self._library is None:
-            try:
-                from vectrola.services.library import UserLibrary
-                self._library = UserLibrary()
-            except ImportError:
-                self._library = None
-        return self._library
 
     def generate_all(self):
         """Generate complete wiki for current user."""
@@ -464,21 +447,15 @@ class WikiGenerator:
         for i, p in enumerate(tracks):
             title = p.get("title", "Unknown")
             artists = p.get("artists", [])
-            file_path = p.get("file_path", "")
             track_id = p.get("track_id", "")
-
-            # Get GDrive ID from library if available (Day 7)
-            gdrive_id = None
-            if self.library and track_id:
-                gdrive_id = self.library.get_gdrive_id(track_id)
+            sources = p.get("sources", {"local": {}, "cloud": {}})
 
             playlist.append({
                 "id": f"track-{i}",
                 "title": title,
                 "artist": ", ".join(artists[:1]) if artists else "Unknown",
-                "path": file_path,
-                "gdrive_id": gdrive_id,  # Day 7
-                "track_id": track_id,    # Day 7
+                "sources": sources,
+                "track_id": track_id,
             })
 
         json_str = json.dumps(playlist, ensure_ascii=False)
@@ -527,27 +504,20 @@ class WikiGenerator:
         Returns:
             Vectrola code block as a string (JSON config for the plugin)
         """
-        # Build playlist data with GDrive IDs, duration, and artwork
+        # Build playlist data with sources, duration, and artwork
         playlist = []
         total_duration_ms = 0
 
         for i, p in enumerate(tracks):
             title = p.get("title", "Unknown")
             artists = p.get("artists", [])
-            file_path = p.get("file_path", "")
             track_link = self._sanitize_filename(title)
             track_id = p.get("track_id", "")
             # Duration: prefer duration_ms, fallback to duration_seconds * 1000
             duration_ms = p.get("duration_ms") or int((p.get("duration_seconds") or 0) * 1000)
 
-            # Get GDrive ID from library if available (Day 7)
-            gdrive_id = None
-            if self.library and track_id:
-                gdrive_id = self.library.get_gdrive_id(track_id)
-
-            # Also check if it was stored in payload directly
-            if not gdrive_id:
-                gdrive_id = p.get("gdrive_file_id")
+            # Get sources from Qdrant payload
+            sources = p.get("sources", {"local": {}, "cloud": {}})
 
             # Get first mood for gradient fallback
             moods = p.get("moods", [])
@@ -561,9 +531,8 @@ class WikiGenerator:
                 "duration": self._format_duration(duration_ms),
                 "artwork_url": p.get("album_art_url"),  # From Spotify
                 "mood": first_mood,  # For gradient fallback in player
-                "path": file_path,
-                "gdrive_id": gdrive_id,  # Day 7
-                "track_id": track_id,    # Day 7
+                "sources": sources,
+                "track_id": track_id,
                 "link": track_link,
             })
             total_duration_ms += duration_ms or 0
