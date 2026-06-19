@@ -5,6 +5,37 @@ from typing import Optional
 import re
 
 
+def fetch_spotify_thumbnail(spotify_id: str) -> Optional[str]:
+    """
+    Fetch album art URL from Spotify oEmbed API.
+
+    This is a fallback when the SpotAPI search doesn't return cover art.
+
+    Args:
+        spotify_id: Spotify track ID (e.g., "4PTG3Z6ehGkBFwjybzWkR8")
+
+    Returns:
+        Thumbnail URL (i.scdn.co) or None
+    """
+    import requests
+
+    if not spotify_id:
+        return None
+
+    track_url = f"https://open.spotify.com/track/{spotify_id}"
+    oembed_url = f"https://open.spotify.com/oembed?url={track_url}"
+
+    try:
+        response = requests.get(oembed_url, timeout=5)
+        if response.ok:
+            data = response.json()
+            return data.get("thumbnail_url")
+    except Exception:
+        pass
+
+    return None
+
+
 @dataclass
 class SpotifyTrack:
     """Track metadata from Spotify."""
@@ -133,6 +164,10 @@ class SpotifyFetcher:
                 # Get Spotify ID
                 uri = track_data.get('uri', '')
                 spotify_id = uri.split(':')[-1] if uri else ''
+
+                # Fallback to oEmbed if no album art from search
+                if not album_art_url and spotify_id:
+                    album_art_url = fetch_spotify_thumbnail(spotify_id)
 
                 tracks.append(SpotifyTrack(
                     title=track_data.get('name', ''),

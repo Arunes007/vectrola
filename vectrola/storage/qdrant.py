@@ -119,6 +119,16 @@ class VectrolaDB:
         except Exception:
             pass  # Index may already exist
 
+        try:
+            # Index for checksum (deduplication by file hash)
+            self._client.create_payload_index(
+                collection_name=self.COLLECTION,
+                field_name="checksum",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass  # Index may already exist
+
     def _generate_id(self, identifier: str) -> str:
         """Generate deterministic UUID from identifier (track_id or file_path)."""
         return str(uuid.uuid5(uuid.NAMESPACE_DNS, identifier))

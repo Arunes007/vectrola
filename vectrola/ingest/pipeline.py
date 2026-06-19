@@ -6,7 +6,7 @@ from typing import Optional
 import json
 import hashlib
 
-from vectrola.config import get_config, get_or_create_user_id
+from vectrola.config import get_config, get_or_create_user_id, get_device_id
 from vectrola.ingest.transcribe import Transcriber, TranscriptionResult
 from vectrola.ingest.synthesis import Synthesizer, SynthesisResult
 from vectrola.ingest.lyrics import LyricsFetcher, LyricsResult
@@ -66,6 +66,104 @@ def calculate_era(year: Optional[int]) -> str:
         return "Fresh Hits"
 
 
+def calculate_checksum(file_path: Path) -> str:
+    """
+    Calculate MD5 checksum of audio file.
+
+    Args:
+        file_path: Path to audio file
+
+    Returns:
+        MD5 hex digest (32 characters)
+    """
+    hash_md5 = hashlib.md5()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            hash_md5.update(chunk)
+    return hash_md5.hexdigest()
+
+
+def find_existing_track(
+    db,
+    checksum: str,
+    title: str,
+    artist: Optional[str],
+) -> Optional[tuple]:
+    """
+    Find existing track using 2-tier deduplication.
+
+    Priority:
+    1. Checksum (exact file match)
+    2. Title + Artist (only if BOTH exist)
+
+    If no match and artist is missing, returns None to trigger Spotify lookup.
+
+    Args:
+        db: VectrolaDB instance
+        checksum: MD5 hash of audio file
+        title: Track title
+        artist: Artist name (required for tier 2)
+
+    Returns:
+        (point_id, track_id, payload) or None
+    """
+    from qdrant_client import models
+
+    # 1. Check by checksum (fastest, exact match)
+    try:
+        result = db.client.scroll(
+            collection_name=db.COLLECTION,
+            scroll_filter=models.Filter(
+                must=[models.FieldCondition(key="checksum", match=models.MatchValue(value=checksum))]
+            ),
+            limit=1,
+            with_payload=True,
+        )
+        if result[0]:
+            point = result[0][0]
+            return (point.id, point.payload.get("track_id"), point.payload)
+    except Exception:
+        pass
+
+    # 2. Check by Title + Artist (only if BOTH exist)
+    if not title or not artist:
+        return None  # Need Spotify lookup for accurate match
+
+    normalized_title = title.lower().strip()
+    normalized_artist = artist.lower().strip()
+
+    try:
+        # Get all tracks for comparison (limited to 500)
+        result = db.client.scroll(
+            collection_name=db.COLLECTION,
+            limit=500,
+            with_payload=["title", "artists", "track_id"],
+        )
+
+        for point in result[0]:
+            existing_title = point.payload.get("title", "").lower().strip()
+            existing_artists = point.payload.get("artists", [])
+            existing_artist = existing_artists[0].lower().strip() if existing_artists else ""
+
+            if existing_title == normalized_title and existing_artist == normalized_artist:
+                # Fetch full payload
+                full_result = db.client.scroll(
+                    collection_name=db.COLLECTION,
+                    scroll_filter=models.Filter(
+                        must=[models.FieldCondition(key="track_id", match=models.MatchValue(value=point.payload.get("track_id")))]
+                    ),
+                    limit=1,
+                    with_payload=True,
+                )
+                if full_result[0]:
+                    full_point = full_result[0][0]
+                    return (full_point.id, full_point.payload.get("track_id"), full_point.payload)
+    except Exception:
+        pass
+
+    return None
+
+
 @dataclass
 class TrackAnalysis:
     """Complete analysis result for a track."""
@@ -113,17 +211,19 @@ class TrackAnalysis:
     track_id: str = ""  # "spotify:xxx" or "hash:xxx"
     spotify_id: Optional[str] = None
 
-    # Cloud storage (Day 7)
-    gdrive_file_id: Optional[str] = None  # Google Drive file ID for playback
-    gdrive_path: Optional[str] = None  # Original path in Google Drive
+    # Multi-device/multi-cloud sources (Day 7+)
+    # Structure: {"local": {"hostname": "/path/to/file"}, "cloud": {"gdrive": {"file_id": "...", "path": "..."}}}
+    sources: dict = field(default_factory=lambda: {"local": {}, "cloud": {}})
 
     # Album art
     album_art_url: Optional[str] = None  # Spotify album cover art URL
 
+    # Deduplication
+    checksum: str = ""  # MD5 hash of audio file content
+
     def to_dict(self) -> dict:
         """Convert to dictionary for storage."""
         return {
-            "file_path": str(self.file_path),
             "title": self.title,
             "artists": self.artists,
             "album": self.album,
@@ -148,11 +248,12 @@ class TrackAnalysis:
             # Track identification (Day 7)
             "track_id": self.track_id,
             "spotify_id": self.spotify_id,
-            # Cloud storage (Day 7)
-            "gdrive_file_id": self.gdrive_file_id,
-            "gdrive_path": self.gdrive_path,
+            # Multi-device/multi-cloud sources
+            "sources": self.sources,
             # Album art
             "album_art_url": self.album_art_url,
+            # Deduplication
+            "checksum": self.checksum,
         }
 
 
@@ -242,7 +343,6 @@ class IngestPipeline:
         6. LLM synthesis for themes/moods/narrative
         7. Generate track_id for deduplication
         8. Store in Qdrant (with deduplication check)
-        9. Add to user's library
 
         Args:
             file_path: Path to the audio file
@@ -264,6 +364,11 @@ class IngestPipeline:
         spotify_id = None  # Will be captured from Spotify lookup
 
         # ===========================================
+        # 0. Calculate checksum for deduplication
+        # ===========================================
+        checksum = calculate_checksum(file_path)
+
+        # ===========================================
         # 1. Read existing file tags
         # ===========================================
         log("Reading file tags...")
@@ -279,10 +384,105 @@ class IngestPipeline:
         metadata_source = "file_tags" if file_tags.has_metadata else ""
 
         # ===========================================
+        # 1.5. EARLY DEDUP CHECK - Checksum or Title+Artist
+        # ===========================================
+        db = None
+        user_id = None
+        device_id = get_device_id()
+        try:
+            from vectrola.storage.qdrant import get_db
+            db = get_db()
+            user_id = get_or_create_user_id()
+            artist_str = artists[0] if artists else None
+
+            existing = find_existing_track(
+                db=db,
+                checksum=checksum,
+                title=title,
+                artist=artist_str,
+            )
+
+            if existing:
+                point_id, track_id, payload = existing
+                log(f"✓ Found existing track (skipping analysis): {title}")
+
+                # Merge sources - add new device path to existing sources
+                existing_sources = payload.get("sources", {"local": {}, "cloud": {}})
+                if not existing_sources:
+                    existing_sources = {"local": {}, "cloud": {}}
+
+                # Add local path for this device
+                existing_sources["local"][device_id] = str(file_path)
+
+                # Add GDrive if provided
+                if gdrive_file_id:
+                    existing_sources["cloud"]["gdrive"] = {
+                        "file_id": gdrive_file_id,
+                        "path": gdrive_path or ""
+                    }
+
+                # Build payload updates
+                payload_updates = {"sources": existing_sources, "checksum": checksum}
+
+                # Fetch thumbnail if missing
+                existing_album_art = payload.get("album_art_url")
+                if not existing_album_art:
+                    spotify_id = payload.get("spotify_id")
+                    if spotify_id:
+                        from vectrola.ingest.spotify import fetch_spotify_thumbnail
+                        thumbnail = fetch_spotify_thumbnail(spotify_id)
+                        if thumbnail:
+                            payload_updates["album_art_url"] = thumbnail
+                            log(f"✓ Fetched missing thumbnail")
+
+                # Update sources, checksum, and optionally album_art_url in Qdrant
+                db.client.set_payload(
+                    collection_name=db.COLLECTION,
+                    payload=payload_updates,
+                    points=[point_id]
+                )
+
+                # Add user to track (if not already)
+                db.add_user_to_track(track_id, user_id)
+
+                # Return TrackAnalysis from existing payload
+                return TrackAnalysis(
+                    file_path=file_path,
+                    title=payload.get("title", title),
+                    artists=payload.get("artists", artists),
+                    album=payload.get("album", album),
+                    year=payload.get("year"),
+                    era=payload.get("era", ""),
+                    movie=payload.get("movie", ""),
+                    composer=payload.get("composer", ""),
+                    lyricist=payload.get("lyricist", ""),
+                    lyrics=payload.get("lyrics", ""),
+                    lyrics_source=payload.get("lyrics_source", ""),
+                    language=payload.get("language", ""),
+                    duration_seconds=payload.get("duration_seconds"),
+                    themes=payload.get("themes", []),
+                    moods=payload.get("moods", []),
+                    narrative=payload.get("narrative", ""),
+                    imagery=payload.get("imagery", []),
+                    metadata_source=payload.get("metadata_source", ""),
+                    track_id=track_id,
+                    spotify_id=payload.get("spotify_id"),
+                    sources=existing_sources,
+                    album_art_url=payload_updates.get("album_art_url") or existing_album_art,
+                    checksum=checksum,
+                )
+        except Exception as e:
+            log(f"Dedup check skipped: {e}")
+
+        # ===========================================
         # 2. Fetch metadata from Spotify FIRST (to get artist)
         # ===========================================
         log("Fetching metadata from Spotify...")
         artist_str = artists[0] if artists else ""
+
+        # Check if file has embedded album art (skip thumbnail fetch if so)
+        from vectrola.storage.tags import has_embedded_artwork
+        file_has_artwork = has_embedded_artwork(file_path)
 
         spotify_track = self.spotify_fetcher.get_best_match(title, artist_str)
         spotify_duration_seconds = None  # Track Spotify's duration
@@ -291,8 +491,9 @@ class IngestPipeline:
             # Capture spotify_id for track identification
             spotify_id = spotify_track.spotify_id
 
-            # Capture album art URL
-            album_art_url = spotify_track.album_art_url
+            # Capture album art URL (skip if file already has embedded art)
+            if not file_has_artwork:
+                album_art_url = spotify_track.album_art_url
 
             # Get artist from Spotify if we don't have one
             if not artists and spotify_track.artists:
@@ -443,6 +644,15 @@ class IngestPipeline:
         # Calculate era from year
         era = calculate_era(year)
 
+        # Build sources structure for this device
+        sources = {"local": {}, "cloud": {}}
+        sources["local"][device_id] = str(file_path)
+        if gdrive_file_id:
+            sources["cloud"]["gdrive"] = {
+                "file_id": gdrive_file_id,
+                "path": gdrive_path or ""
+            }
+
         analysis = TrackAnalysis(
             file_path=file_path,
             title=title,
@@ -466,11 +676,12 @@ class IngestPipeline:
             # Track identification (Day 7)
             track_id=track_id,
             spotify_id=spotify_id,
-            # Cloud storage (Day 7)
-            gdrive_file_id=gdrive_file_id,
-            gdrive_path=gdrive_path,
+            # Multi-device sources
+            sources=sources,
             # Album art
             album_art_url=album_art_url,
+            # Deduplication
+            checksum=checksum,
         )
 
         # ===========================================
@@ -509,22 +720,6 @@ class IngestPipeline:
                         payload=analysis.to_dict(),
                         user_id=user_id,
                     )
-
-            # ===========================================
-            # 9. Add to user's library (always)
-            # ===========================================
-            log("Adding to user library...")
-            try:
-                from vectrola.services.library import UserLibrary
-                library = UserLibrary(user_id)
-                library.add_track(
-                    track_id=track_id,
-                    gdrive_file_id=gdrive_file_id,
-                    local_path=str(file_path),
-                )
-            except ImportError:
-                # Library service not available yet - that's OK
-                pass
 
         except Exception as e:
             # Don't fail the whole pipeline if Qdrant is unavailable

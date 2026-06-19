@@ -34,25 +34,14 @@ Vectrola uses a single collection `vectrola_library` with **named vectors**:
 
 ### Payload Schema
 
-Each track stores:
+See **[schema.md](schema.md)** for the complete payload schema reference.
 
-```json
-{
-  "file_path": "/path/to/song.mp3",
-  "title": "Tum Hi Ho",
-  "artists": ["Arijit Singh", "Mithoon"],
-  "album": "Aashiqui 2",
-  "movie": "Aashiqui 2",
-  "year": 2013,
-  "composer": "Mithoon",
-  "lyricist": "Irshad Kamil",
-  "lyrics": "Full lyrics text...",
-  "moods": ["melancholic", "romantic"],
-  "themes": ["love", "longing"],
-  "narrative": "A love song about...",
-  "language": "hi"
-}
-```
+Key fields include:
+- `title`, `artists`, `album`, `movie`, `year`
+- `moods`, `themes`, `narrative` (AI analysis)
+- `track_id`, `checksum` (deduplication)
+- `sources` (multi-device local/cloud paths)
+- `user_ids` (multi-tenant)
 
 ## Python API
 
