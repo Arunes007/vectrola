@@ -22,12 +22,17 @@ vectrola refresh --list
 # Refresh all tracks in your library
 vectrola refresh
 
+# Regenerate wiki to see the updated metadata
+vectrola wiki
+
 # Refresh a specific track
 vectrola refresh --track "Maula Mere Maula"
 
 # Refresh tracks from a folder
 vectrola refresh /path/to/music
 ```
+
+**Note:** After refreshing metadata, run `vectrola wiki` to regenerate the Obsidian wiki with the updated information.
 
 ## How It Works
 
@@ -247,6 +252,7 @@ You can re-run `vectrola refresh` to retry failed tracks.
 - **No local file = No Whisper:** If a track only has GDrive source (no local path), Whisper transcription fallback won't work
 - **No re-embedding:** Refresh doesn't regenerate text/audio embeddings (preserves existing vectors)
 - **No file tag updates:** Refresh only updates Qdrant, not audio file tags (use `vectrola ingest --force` for that)
+- **Wiki not auto-updated:** After refreshing metadata, run `vectrola wiki` to regenerate the Obsidian wiki with updated information
 
 ## vs. Other Commands
 

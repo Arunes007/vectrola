@@ -2017,6 +2017,12 @@ def refresh(
     if error_count > 0:
         console.print(f"❌ Errors: {error_count} tracks")
 
+    # Suggest wiki regeneration if any tracks were updated
+    if updated_count > 0:
+        console.print()
+        console.print("[bold]Next step:[/bold]")
+        console.print("  • Regenerate wiki to see changes: [cyan]vectrola wiki[/cyan]")
+
 
 @app.command("migrate-user")
 def migrate_user(
