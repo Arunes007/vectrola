@@ -405,6 +405,39 @@ function Write-Config {
         New-Item -ItemType Directory -Path $VectrolaConfigDir -Force | Out-Null
     }
 
+    # Determine storage mode
+    $storageMode = if ($script:QdrantType -eq 'local') { 'local' } else { 'remote' }
+
+    # Write config.json (used by vectrola CLI)
+    $configJson = "$VectrolaConfigDir\config.json"
+    $apiKeyValue = if ([string]::IsNullOrWhiteSpace($script:QdrantApiKeyValue)) { 'null' } else { "`"$script:QdrantApiKeyValue`"" }
+
+    $jsonContent = @"
+{
+  "version": 1,
+  "storage": {
+    "mode": "$storageMode",
+    "qdrant_url": "$script:QdrantUrlValue",
+    "qdrant_api_key": $apiKeyValue
+  },
+  "llm": {
+    "provider": "ollama",
+    "model": "llama3.2:1b",
+    "api_key": null
+  },
+  "gdrive": {
+    "enabled": false
+  },
+  "user": {
+    "mode": "anonymous",
+    "multi_tenant": false
+  }
+}
+"@
+
+    Set-Content -Path $configJson -Value $jsonContent
+
+    # Also write .env for backwards compatibility
     $envFile = "$VectrolaConfigDir\.env"
     $date = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
 
@@ -425,7 +458,7 @@ QDRANT_URL=$script:QdrantUrlValue
 
     Set-Content -Path $envFile -Value $content
 
-    Write-Success "Configuration saved to $envFile"
+    Write-Success "Configuration saved to $configJson"
 }
 
 function Set-Path {

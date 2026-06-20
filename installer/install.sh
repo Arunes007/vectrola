@@ -400,6 +400,38 @@ write_config() {
 
     mkdir -p "$VECTROLA_CONFIG_DIR"
 
+    # Write config.json (used by vectrola CLI)
+    local storage_mode
+    case "$QDRANT_TYPE" in
+        hosted|remote) storage_mode="remote" ;;
+        local) storage_mode="local" ;;
+    esac
+
+    local config_json="$VECTROLA_CONFIG_DIR/config.json"
+    cat > "$config_json" << EOF
+{
+  "version": 1,
+  "storage": {
+    "mode": "$storage_mode",
+    "qdrant_url": "$QDRANT_URL",
+    "qdrant_api_key": ${QDRANT_API_KEY:+\"$QDRANT_API_KEY\"}${QDRANT_API_KEY:-null}
+  },
+  "llm": {
+    "provider": "ollama",
+    "model": "llama3.2:1b",
+    "api_key": null
+  },
+  "gdrive": {
+    "enabled": false
+  },
+  "user": {
+    "mode": "anonymous",
+    "multi_tenant": false
+  }
+}
+EOF
+
+    # Also write .env for backwards compatibility
     local env_file="$VECTROLA_CONFIG_DIR/.env"
 
     cat > "$env_file" << EOF
@@ -417,7 +449,7 @@ EOF
         echo "QDRANT_API_KEY=$QDRANT_API_KEY" >> "$env_file"
     fi
 
-    success "Configuration saved to $env_file"
+    success "Configuration saved to $config_json"
 }
 
 configure_shell() {

@@ -16,6 +16,20 @@ from vectrola.messages import load_messages
 console = Console()
 
 
+def show_qdrant_error(config):
+    """Show context-aware Qdrant connection error message."""
+    console.print("[red]Error: Cannot connect to Qdrant.[/red]")
+
+    if config.storage_mode == "remote" or ("localhost" not in config.qdrant_url and "127.0.0.1" not in config.qdrant_url):
+        console.print(f"[dim]Remote Qdrant URL: {config.qdrant_url}[/dim]")
+        console.print("[dim]Check that:[/dim]")
+        console.print("[dim]  1. The URL is correct[/dim]")
+        console.print("[dim]  2. Your API key is set (QDRANT_API_KEY env var)[/dim]")
+        console.print("[dim]  3. The Qdrant server is running[/dim]")
+    else:
+        console.print("[dim]Start local Qdrant with: docker run -d -p 6333:6333 qdrant/qdrant[/dim]")
+
+
 def show_welcome(ctx: typer.Context):
     """Show welcome message when no command is provided."""
     if ctx.invoked_subcommand is None:
@@ -285,6 +299,7 @@ def search(
         vectrola search "dark ambient texture" --mode audio
     """
     from vectrola.search.semantic import SemanticSearch
+    from vectrola.config import get_config
 
     # Check Qdrant is running
     try:
@@ -292,8 +307,7 @@ def search(
         db = get_db()
         count = db.count()
     except Exception as e:
-        console.print("[red]Error: Cannot connect to Qdrant.[/red]")
-        console.print("[dim]Start it with: docker run -d -p 6333:6333 qdrant/qdrant[/dim]")
+        show_qdrant_error(get_config())
         raise typer.Exit(1)
 
     if count == 0:
@@ -414,6 +428,7 @@ def wiki(
     Use --sync to upload the wiki to Google Drive for cross-device access.
     """
     from vectrola.storage.wiki import WikiGenerator
+    from vectrola.config import get_config
 
     # Check if there are indexed tracks
     try:
@@ -421,8 +436,8 @@ def wiki(
         db = get_db()
         count = db.count()
     except Exception as e:
-        console.print("[red]Error: Cannot connect to Qdrant.[/red]")
-        console.print("[dim]Start it with: docker run -d -p 6333:6333 qdrant/qdrant[/dim]")
+        show_qdrant_error(get_config())
+        raise typer.Exit(1)
         raise typer.Exit(1)
 
     if count == 0:
