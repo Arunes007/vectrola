@@ -390,6 +390,27 @@ function Install-Dependencies {
 
     $venvPip = "$VectrolaInstallDir\.venv\Scripts\pip.exe"
 
+    # Check if vectrola is already installed
+    $installedCheck = & $venvPip show vectrola 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        $installedVersion = ($installedCheck | Select-String "^Version:" | ForEach-Object { $_.ToString().Split(':')[1].Trim() })
+        Write-Info "Vectrola already installed (version: $installedVersion)"
+
+        # In non-interactive mode, always reinstall to ensure latest
+        if ($script:NonInteractive) {
+            Write-Info "Non-interactive mode: updating installation..."
+        } else {
+            # Ask if user wants to reinstall/update
+            $reinstall = Read-Host "   Reinstall dependencies? [y/N]"
+            if ([string]::IsNullOrWhiteSpace($reinstall)) { $reinstall = 'N' }
+
+            if ($reinstall -notmatch '^[Yy]$') {
+                Write-Success "Using existing installation"
+                return
+            }
+        }
+    }
+
     & $venvPip install --upgrade pip --quiet
     Push-Location $VectrolaInstallDir
     & $venvPip install -e ".[full]" --quiet

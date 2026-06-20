@@ -389,6 +389,28 @@ setup_venv() {
 install_deps() {
     step "Installing dependencies..."
 
+    # Check if vectrola is already installed
+    if pip show vectrola >/dev/null 2>&1; then
+        local installed_version
+        installed_version=$(pip show vectrola 2>/dev/null | grep "^Version:" | awk '{print $2}')
+        info "Vectrola already installed (version: ${installed_version:-unknown})"
+
+        # In non-interactive mode, always reinstall to ensure latest
+        if [[ "$NON_INTERACTIVE" == "true" ]]; then
+            info "Non-interactive mode: updating installation..."
+        else
+            # Ask if user wants to reinstall/update
+            local reinstall
+            read -rp "   Reinstall dependencies? [y/N]: " reinstall </dev/tty
+            reinstall="${reinstall:-N}"
+
+            if [[ ! "$reinstall" =~ ^[Yy]$ ]]; then
+                success "Using existing installation"
+                return 0
+            fi
+        fi
+    fi
+
     pip install --upgrade pip --quiet
     pip install -e ".[full]" --quiet
 
