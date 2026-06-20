@@ -16,7 +16,7 @@ VECTROLA_CONFIG_DIR="${VECTROLA_CONFIG_DIR:-$HOME/.config/vectrola}"
 
 # Default service URLs
 DEFAULT_OLLAMA_HOST="http://localhost:11434"
-DEFAULT_QDRANT_HOSTED="https://qdrant.vectrola.dev"
+DEFAULT_QDRANT_HOSTED="https://qdrant-vectrola.up.railway.app"
 DEFAULT_QDRANT_LOCAL="http://localhost:6333"
 
 # ============================================================================
@@ -219,17 +219,33 @@ prompt_llm_config() {
     echo ""
 
     local choice
-    read -rp "   Choice [1]: " choice
+    read -rp "   Choice [1]: " choice </dev/tty
     choice="${choice:-1}"
 
     case "$choice" in
         1)
             LLM_TYPE="local"
             OLLAMA_HOST="$DEFAULT_OLLAMA_HOST"
+
+            # Offer to install Ollama if not present
+            if [[ "$OLLAMA_AVAILABLE" != "true" ]]; then
+                echo ""
+                info "Ollama is not installed on your system"
+                local install_ollama
+                read -rp "   Install Ollama now? [Y/n]: " install_ollama </dev/tty
+                install_ollama="${install_ollama:-Y}"
+
+                if [[ "$install_ollama" =~ ^[Yy]$ ]]; then
+                    INSTALL_OLLAMA=true
+                else
+                    warn "You'll need to install Ollama manually later"
+                    INSTALL_OLLAMA=false
+                fi
+            fi
             ;;
         2)
             LLM_TYPE="remote"
-            read -rp "   Enter LLM endpoint URL: " OLLAMA_HOST
+            read -rp "   Enter LLM endpoint URL: " OLLAMA_HOST </dev/tty
             if [[ -z "$OLLAMA_HOST" ]]; then
                 error "URL cannot be empty"
                 exit 1
@@ -253,7 +269,7 @@ prompt_qdrant_config() {
     echo ""
 
     local choice
-    read -rp "   Choice [1]: " choice
+    read -rp "   Choice [1]: " choice </dev/tty
     choice="${choice:-1}"
 
     case "$choice" in
@@ -267,12 +283,12 @@ prompt_qdrant_config() {
             ;;
         3)
             QDRANT_TYPE="remote"
-            read -rp "   Enter Qdrant URL: " QDRANT_URL
+            read -rp "   Enter Qdrant URL: " QDRANT_URL </dev/tty
             if [[ -z "$QDRANT_URL" ]]; then
                 error "URL cannot be empty"
                 exit 1
             fi
-            read -rp "   Enter Qdrant API key (or press Enter to skip): " QDRANT_API_KEY
+            read -rp "   Enter Qdrant API key (or press Enter to skip): " QDRANT_API_KEY </dev/tty
             ;;
         *)
             error "Invalid choice: $choice"
@@ -309,7 +325,7 @@ confirm_config() {
     echo ""
 
     local confirm
-    read -rp "Proceed? [Y/n]: " confirm
+    read -rp "Proceed? [Y/n]: " confirm </dev/tty
     confirm="${confirm:-Y}"
 
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -497,6 +513,69 @@ setup_local_qdrant() {
     success "Qdrant container started"
 }
 
+install_ollama() {
+    if [[ "${INSTALL_OLLAMA:-false}" != "true" ]]; then
+        return
+    fi
+
+    step "Installing Ollama..."
+
+    case "$PLATFORM" in
+        macos)
+            # Check if Homebrew is available
+            if command -v brew >/dev/null 2>&1; then
+                info "Installing via Homebrew..."
+                brew install ollama
+            else
+                info "Downloading Ollama installer..."
+                curl -fsSL https://ollama.ai/install.sh | sh
+            fi
+            ;;
+        linux)
+            info "Downloading Ollama installer..."
+            curl -fsSL https://ollama.ai/install.sh | sh
+            ;;
+        *)
+            warn "Automatic Ollama installation not supported on $PLATFORM"
+            return
+            ;;
+    esac
+
+    success "Ollama installed"
+
+    # Start Ollama in the background
+    info "Starting Ollama service..."
+    if [[ "$PLATFORM" == "macos" ]]; then
+        # On macOS, brew services or launch in background
+        if command -v brew >/dev/null 2>&1; then
+            brew services start ollama 2>/dev/null || ollama serve > /dev/null 2>&1 &
+        else
+            ollama serve > /dev/null 2>&1 &
+        fi
+    else
+        # On Linux, start as background process
+        ollama serve > /dev/null 2>&1 &
+    fi
+
+    # Wait a moment for Ollama to start
+    sleep 2
+
+    # Read default model from defaults.yml
+    local default_model="llama3.2:1b"  # Fallback
+    if [[ -f "$VECTROLA_INSTALL_DIR/vectrola/defaults.yml" ]]; then
+        default_model=$(grep "default_model:" "$VECTROLA_INSTALL_DIR/vectrola/defaults.yml" | awk '{print $2}' | tr -d '"')
+    fi
+
+    # Pull the default model
+    info "Downloading LLM model ($default_model)..."
+    echo "   ${DIM}This may take a few minutes on first run...${RESET}"
+    if ollama pull "$default_model"; then
+        success "LLM model ready"
+    else
+        warn "Failed to download model - you can run 'ollama pull $default_model' later"
+    fi
+}
+
 verify_installation() {
     step "Verifying installation..."
 
@@ -536,7 +615,10 @@ print_next_steps() {
     esac
     echo ""
 
-    if [[ "$LLM_TYPE" == "local" && "$OLLAMA_AVAILABLE" != "true" ]]; then
+    if [[ "$LLM_TYPE" == "local" && "${INSTALL_OLLAMA:-false}" == "true" ]]; then
+        echo "  ${GREEN}✓${RESET} Ollama installed and model downloaded"
+        echo ""
+    elif [[ "$LLM_TYPE" == "local" && "$OLLAMA_AVAILABLE" != "true" ]]; then
         echo "  2. Install Ollama (required for semantic analysis):"
         case "$PLATFORM" in
             macos)
@@ -550,12 +632,12 @@ print_next_steps() {
         echo ""
         echo "  3. Start Ollama and pull a model:"
         echo "     ${CYAN}ollama serve${RESET}          # In one terminal"
-        echo "     ${CYAN}ollama pull qwen2.5:3b${RESET}  # In another terminal"
+        echo "     ${CYAN}ollama pull llama3.2:1b${RESET}  # In another terminal"
         echo ""
     elif [[ "$LLM_TYPE" == "local" && "$OLLAMA_RUNNING" != "true" ]]; then
         echo "  2. Start Ollama:"
         echo "     ${CYAN}ollama serve${RESET}"
-        echo "     ${CYAN}ollama pull qwen2.5:3b${RESET}  # If you haven't already"
+        echo "     ${CYAN}ollama pull llama3.2:1b${RESET}  # If you haven't already"
         echo ""
     fi
 
@@ -594,11 +676,17 @@ ENVIRONMENT VARIABLES:
     VECTROLA_INSTALL_DIR    Installation directory (default: ~/.vectrola)
     VECTROLA_CONFIG_DIR     Config directory (default: ~/.config/vectrola)
 
+FEATURES:
+    • Interactive mode asks to install Ollama if you choose Local LLM
+    • Non-interactive mode auto-installs Ollama for Local LLM (if missing)
+    • Automatically downloads the default LLM model from vectrola/defaults.yml
+
 EXAMPLES:
     # Interactive installation (recommended)
     curl -fsSL .../install.sh | bash
 
     # Non-interactive with defaults (local Ollama + hosted Qdrant)
+    # Will auto-install Ollama if missing
     curl ... | bash -s -- --non-interactive
 
     # Non-interactive with local everything
@@ -658,7 +746,13 @@ parse_args() {
         QDRANT_TYPE="${QDRANT_TYPE:-hosted}"
 
         case "$LLM_TYPE" in
-            local)  OLLAMA_HOST="${OLLAMA_HOST:-$DEFAULT_OLLAMA_HOST}" ;;
+            local)
+                OLLAMA_HOST="${OLLAMA_HOST:-$DEFAULT_OLLAMA_HOST}"
+                # Auto-install Ollama in non-interactive mode if not present
+                if [[ "$OLLAMA_AVAILABLE" != "true" ]]; then
+                    INSTALL_OLLAMA=true
+                fi
+                ;;
             remote)
                 if [[ -z "$OLLAMA_HOST" ]]; then
                     error "--llm-url is required when using --llm=remote"
@@ -727,6 +821,7 @@ main() {
     install_deps
     write_config
     configure_shell
+    install_ollama
     setup_local_qdrant
     verify_installation
 

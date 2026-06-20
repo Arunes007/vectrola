@@ -32,9 +32,9 @@ Visualize your entire music library as an interactive network of artists, songs,
 
 Browse your library by mood with an integrated audio player:
 
-![Mood Playlist View](docs/images/mood-playlist.png)
+![Mood Playlist View](docs/images/mood-playlist-timeless.png)
 
-*Select any mood from the sidebar to see matching tracks. Click to play directly in Obsidian with the Spotify-like player bar at the bottom.*
+*Select any mood from the sidebar to see matching tracks. Click to play directly in Obsidian with the Spotify-like player bar at the bottom. The "Timeless" era shows 102 songs with play/shuffle controls.*
 
 ## Quick Install
 
@@ -61,7 +61,7 @@ If you chose **Local Ollama** (the default), install and start Ollama:
 
 # Start Ollama and download a model
 ollama serve          # In one terminal
-ollama pull qwen2.5:3b  # In another terminal
+ollama pull llama3.2:1b  # In another terminal
 ```
 
 ### Verify Installation

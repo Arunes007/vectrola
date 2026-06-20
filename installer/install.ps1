@@ -44,7 +44,7 @@ $VectrolaInstallDir = $env:VECTROLA_INSTALL_DIR ?? "$env:USERPROFILE\.vectrola"
 $VectrolaConfigDir = $env:VECTROLA_CONFIG_DIR ?? "$env:USERPROFILE\.config\vectrola"
 
 $DefaultOllamaHost = 'http://localhost:11434'
-$DefaultQdrantHosted = 'https://qdrant.vectrola.dev'
+$DefaultQdrantHosted = 'https://qdrant-vectrola.up.railway.app'
 $DefaultQdrantLocal = 'http://localhost:6333'
 
 # ============================================================================
@@ -88,6 +88,12 @@ ENVIRONMENT VARIABLES:
     VECTROLA_VERSION        Git branch/tag to install (default: main)
     VECTROLA_INSTALL_DIR    Installation directory (default: ~/.vectrola)
     VECTROLA_CONFIG_DIR     Config directory (default: ~/.config/vectrola)
+
+FEATURES:
+    • Interactive mode asks to install Ollama if you choose Local LLM
+    • Non-interactive mode auto-installs Ollama for Local LLM (if missing)
+    • Uses winget when available, or downloads installer directly
+    • Automatically downloads the default LLM model from vectrola/defaults.yml
 
 EXAMPLES:
     # Interactive installation (recommended)
@@ -217,6 +223,21 @@ function Get-LlmConfig {
         '1' {
             $script:LlmType = 'local'
             $script:OllamaHost = $DefaultOllamaHost
+
+            # Offer to install Ollama if not present
+            if (-not $script:OllamaAvailable) {
+                Write-Host ""
+                Write-Info "Ollama is not installed on your system"
+                $installOllama = Read-Host "   Install Ollama now? [Y/n]"
+                if ([string]::IsNullOrWhiteSpace($installOllama)) { $installOllama = 'Y' }
+
+                if ($installOllama -match '^[Yy]$') {
+                    $script:InstallOllama = $true
+                } else {
+                    Write-Warn "You'll need to install Ollama manually later"
+                    $script:InstallOllama = $false
+                }
+            }
         }
         '2' {
             $script:LlmType = 'remote'
@@ -460,6 +481,80 @@ function Install-LocalQdrant {
     Write-Success "Qdrant container started"
 }
 
+function Install-OllamaWindows {
+    if (-not $script:InstallOllama) {
+        return
+    }
+
+    Write-Step "Installing Ollama..."
+
+    # Check if winget is available (Windows 11 / Windows 10 with App Installer)
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        Write-Info "Installing via winget..."
+        try {
+            winget install --id Ollama.Ollama --silent --accept-package-agreements --accept-source-agreements
+            Write-Success "Ollama installed"
+        } catch {
+            Write-Warn "winget installation failed, falling back to manual download"
+            Install-OllamaManual
+            return
+        }
+    } else {
+        # Fallback: Download installer directly
+        Write-Info "Downloading Ollama installer..."
+        Install-OllamaManual
+        return
+    }
+
+    # Start Ollama service
+    Write-Info "Starting Ollama service..."
+    Start-Process "ollama" -ArgumentList "serve" -WindowStyle Hidden
+
+    # Wait for Ollama to start
+    Start-Sleep -Seconds 3
+
+    # Read default model from defaults.yml
+    $defaultModel = "llama3.2:1b"  # Fallback
+    $defaultsPath = "$VectrolaInstallDir\vectrola\defaults.yml"
+    if (Test-Path $defaultsPath) {
+        $content = Get-Content $defaultsPath -Raw
+        if ($content -match 'default_model:\s*["]?([^"\s]+)["]?') {
+            $defaultModel = $matches[1]
+        }
+    }
+
+    # Pull the default model
+    Write-Info "Downloading LLM model ($defaultModel)..."
+    Write-Host "   This may take a few minutes on first run..." -ForegroundColor DarkGray
+    try {
+        & ollama pull $defaultModel
+        Write-Success "LLM model ready"
+    } catch {
+        Write-Warn "Failed to download model - you can run 'ollama pull $defaultModel' later"
+    }
+}
+
+function Install-OllamaManual {
+    $ollamaUrl = "https://ollama.ai/download/OllamaSetup.exe"
+    $installerPath = "$env:TEMP\OllamaSetup.exe"
+
+    try {
+        Invoke-WebRequest -Uri $ollamaUrl -OutFile $installerPath -UseBasicParsing
+        Write-Info "Downloaded installer to $installerPath"
+        Write-Host ""
+        Write-Host "  Please run the installer manually:" -ForegroundColor Yellow
+        Write-Host "     " -NoNewline; Write-Host $installerPath -ForegroundColor Cyan
+        Write-Host ""
+        Write-Host "  After installation, run:" -ForegroundColor Yellow
+        Write-Host "     " -NoNewline; Write-Host "ollama serve" -ForegroundColor Cyan
+        Write-Host "     " -NoNewline; Write-Host "ollama pull llama3.2:1b" -ForegroundColor Cyan
+    } catch {
+        Write-Err "Failed to download Ollama installer"
+        Write-Host "  Please download manually from: " -NoNewline
+        Write-Host "https://ollama.ai/download" -ForegroundColor Cyan
+    }
+}
+
 function Test-Installation {
     Write-Step "Verifying installation..."
 
@@ -489,19 +584,23 @@ function Write-NextSteps {
     Write-Host "(to pick up PATH changes)" -ForegroundColor DarkGray
     Write-Host ""
 
-    if ($script:LlmType -eq 'local' -and -not $script:OllamaAvailable) {
+    if ($script:LlmType -eq 'local' -and $script:InstallOllama) {
+        Write-Host "  " -NoNewline; Write-Host "✓" -ForegroundColor Green -NoNewline
+        Write-Host " Ollama installed and model downloaded"
+        Write-Host ""
+    } elseif ($script:LlmType -eq 'local' -and -not $script:OllamaAvailable) {
         Write-Host "  2. Install Ollama (required for semantic analysis):"
         Write-Host "     Download from: " -NoNewline
         Write-Host "https://ollama.ai/download" -ForegroundColor Cyan
         Write-Host ""
         Write-Host "  3. Start Ollama and pull a model:"
         Write-Host "     " -NoNewline; Write-Host "ollama serve" -ForegroundColor Cyan
-        Write-Host "     " -NoNewline; Write-Host "ollama pull qwen2.5:3b" -ForegroundColor Cyan
+        Write-Host "     " -NoNewline; Write-Host "ollama pull llama3.2:1b" -ForegroundColor Cyan
         Write-Host ""
     } elseif ($script:LlmType -eq 'local' -and -not $script:OllamaRunning) {
         Write-Host "  2. Start Ollama:"
         Write-Host "     " -NoNewline; Write-Host "ollama serve" -ForegroundColor Cyan
-        Write-Host "     " -NoNewline; Write-Host "ollama pull qwen2.5:3b" -ForegroundColor Cyan -NoNewline
+        Write-Host "     " -NoNewline; Write-Host "ollama pull llama3.2:1b" -ForegroundColor Cyan -NoNewline
         Write-Host "  # If you haven't already" -ForegroundColor DarkGray
         Write-Host ""
     }
@@ -546,7 +645,13 @@ if ($NonInteractive) {
 
     # Set URLs based on type
     switch ($script:LlmType) {
-        'local' { $script:OllamaHost = if ($LlmUrl) { $LlmUrl } else { $DefaultOllamaHost } }
+        'local' {
+            $script:OllamaHost = if ($LlmUrl) { $LlmUrl } else { $DefaultOllamaHost }
+            # Auto-install Ollama in non-interactive mode if not present
+            if (-not $script:OllamaAvailable) {
+                $script:InstallOllama = $true
+            }
+        }
         'remote' {
             if ([string]::IsNullOrWhiteSpace($LlmUrl)) {
                 Write-Err "-LlmUrl is required when using -Llm remote"
@@ -589,6 +694,7 @@ Install-Venv
 Install-Dependencies
 Write-Config
 Set-Path
+Install-OllamaWindows
 Install-LocalQdrant
 Test-Installation
 
