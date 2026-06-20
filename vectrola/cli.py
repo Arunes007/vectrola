@@ -214,7 +214,7 @@ def ingest(
         console.print("  • Search your library:   [cyan]vectrola search \"romantic mood\"[/cyan]")
         console.print("  • Generate Obsidian wiki: [cyan]vectrola wiki[/cyan]")
         console.print("  • Sync wiki to Drive:    [cyan]vectrola wiki --sync[/cyan]")
-        console.print("  • View library stats:    [cyan]vectrola library stats[/cyan]")
+
 
 
 @app.command()
@@ -1447,7 +1447,7 @@ def gdrive_ingest(
         console.print("  • Search your library:   [cyan]vectrola search \"romantic mood\"[/cyan]")
         console.print("  • Generate Obsidian wiki: [cyan]vectrola wiki[/cyan]")
         console.print("  • Sync wiki to Drive:    [cyan]vectrola wiki --sync[/cyan]")
-        console.print("  • View library stats:    [cyan]vectrola library stats[/cyan]")
+
 
 
 @gdrive_app.command("status")
