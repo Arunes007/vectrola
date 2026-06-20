@@ -97,42 +97,77 @@ def find_existing_track(
     checksum: str,
     title: str,
     artist: Optional[str],
+    user_id: str,
 ) -> Optional[tuple]:
     """
-    Find existing track using 2-tier deduplication.
+    Find existing track in USER's library using 2-tier deduplication.
 
     Priority:
-    1. Checksum (exact file match)
-    2. track_id (artist+title hash)
+    1. Checksum in user's sources (exact file match for THIS user)
+    2. track_id (artist+title hash) - global catalog match
 
     Args:
         db: VectrolaDB instance
         checksum: MD5 hash of audio file
         title: Track title
         artist: Artist name (required for tier 2)
+        user_id: User ID (required for tier 1 user-specific checksum matching)
 
     Returns:
         (point_id, track_id, payload) or None
     """
     from qdrant_client import models
 
-    # 1. Check by checksum (fastest, exact match)
+    # 1. Check user's library for checksum match (user-specific)
     try:
-        result = db.client.scroll(
-            collection_name=db.COLLECTION,
-            scroll_filter=models.Filter(
-                must=[models.FieldCondition(key="checksum", match=models.MatchValue(value=checksum))]
-            ),
-            limit=1,
-            with_payload=True,
-        )
-        if result[0]:
-            point = result[0][0]
-            return (point.id, point.payload.get("track_id"), point.payload)
+        user_entries = db.get_user_library_entries(user_id, limit=10000)
+        for entry in user_entries:
+            sources = entry.payload.get("sources", {"local": {}, "cloud": {}})
+
+            # Check all local sources
+            for device, source_info in sources.get("local", {}).items():
+                if isinstance(source_info, dict) and source_info.get("checksum") == checksum:
+                    # Found same file in user's library!
+                    track_id = entry.payload["track_id"]
+                    # Get track details from vectrola_library
+                    track_results = db.client.scroll(
+                        collection_name=db.COLLECTION,
+                        scroll_filter=models.Filter(
+                            must=[models.FieldCondition(
+                                key="track_id",
+                                match=models.MatchValue(value=track_id)
+                            )]
+                        ),
+                        limit=1,
+                        with_payload=True
+                    )
+                    if track_results[0]:
+                        track = track_results[0][0]
+                        return (track.id, track_id, track.payload)
+
+            # Check cloud sources
+            for provider, source_info in sources.get("cloud", {}).items():
+                if isinstance(source_info, dict) and source_info.get("checksum") == checksum:
+                    track_id = entry.payload["track_id"]
+                    # Get track details
+                    track_results = db.client.scroll(
+                        collection_name=db.COLLECTION,
+                        scroll_filter=models.Filter(
+                            must=[models.FieldCondition(
+                                key="track_id",
+                                match=models.MatchValue(value=track_id)
+                            )]
+                        ),
+                        limit=1,
+                        with_payload=True
+                    )
+                    if track_results[0]:
+                        track = track_results[0][0]
+                        return (track.id, track_id, track.payload)
     except Exception:
         pass
 
-    # 2. Check by track_id (artist+title hash)
+    # 2. Check by track_id (artist+title hash) - global catalog
     if artist and title:
         candidate_track_id = generate_track_id(artist, title)
 
@@ -245,12 +280,9 @@ class TrackAnalysis:
             "track_id": self.track_id,
             "spotify_track_id": self.spotify_track_id,  # NEW: Separate field
             "spotify_id": self.spotify_id,  # DEPRECATED
-            # Multi-device/multi-cloud sources
-            "sources": self.sources,
             # Album art
             "album_art_url": self.album_art_url,
-            # Deduplication
-            "checksum": self.checksum,
+            # NOTE: sources and checksum NOT included - stored per-user in user_library
         }
 
 
@@ -400,29 +432,68 @@ class IngestPipeline:
                     checksum=checksum,
                     title=title,
                     artist=artist_str,
+                    user_id=user_id,
                 )
 
                 if existing:
                     point_id, track_id, payload = existing
                     log(f"✓ Found existing track (skipping analysis): {title}")
 
-                    # Merge sources - add new device path to existing sources
-                    existing_sources = payload.get("sources", {"local": {}, "cloud": {}})
-                    if not existing_sources:
-                        existing_sources = {"local": {}, "cloud": {}}
+                    # Get user's library entry
+                    user_entries = db.get_user_library_entries(user_id, limit=10000)
+                    user_entry = next((e for e in user_entries if e.payload["track_id"] == track_id), None)
 
-                    # Add local path for this device
-                    existing_sources["local"][device_id] = str(file_path)
+                    if user_entry:
+                        # User already has this track, update sources
+                        user_sources = user_entry.payload.get("sources", {"local": {}, "cloud": {}})
 
-                    # Add GDrive if provided
-                    if gdrive_file_id:
-                        existing_sources["cloud"]["gdrive"] = {
-                            "file_id": gdrive_file_id,
-                            "path": gdrive_path or ""
+                        # Add/update local device path with checksum
+                        if "local" not in user_sources:
+                            user_sources["local"] = {}
+                        user_sources["local"][device_id] = {
+                            "file_path": str(file_path),
+                            "checksum": checksum
                         }
 
-                    # Build payload updates
-                    payload_updates = {"sources": existing_sources, "checksum": checksum}
+                        # Add/update GDrive if provided
+                        if gdrive_file_id:
+                            if "cloud" not in user_sources:
+                                user_sources["cloud"] = {}
+                            user_sources["cloud"]["gdrive"] = {
+                                "file_id": gdrive_file_id,
+                                "path": gdrive_path or "",
+                                "checksum": checksum
+                            }
+
+                        # Update user_library entry with new sources
+                        db.client.set_payload(
+                            collection_name=db.USER_LIBRARY_COLLECTION,
+                            payload={"sources": user_sources},
+                            points=[user_entry.id]
+                        )
+                    else:
+                        # User doesn't have this track yet, add to library
+                        sources = {
+                            "local": {
+                                device_id: {
+                                    "file_path": str(file_path),
+                                    "checksum": checksum
+                                }
+                            },
+                            "cloud": {}
+                        }
+                        if gdrive_file_id:
+                            sources["cloud"]["gdrive"] = {
+                                "file_id": gdrive_file_id,
+                                "path": gdrive_path or "",
+                                "checksum": checksum
+                            }
+
+                        db.add_track_to_user_library(
+                            user_id=user_id,
+                            track_id=track_id,
+                            sources=sources
+                        )
 
                     # Fetch thumbnail if missing
                     existing_album_art = payload.get("album_art_url")
@@ -432,27 +503,13 @@ class IngestPipeline:
                             from vectrola.ingest.spotify import fetch_spotify_thumbnail
                             thumbnail = fetch_spotify_thumbnail(spotify_track_id)
                             if thumbnail:
-                                payload_updates["album_art_url"] = thumbnail
+                                db.client.set_payload(
+                                    collection_name=db.COLLECTION,
+                                    payload={"album_art_url": thumbnail},
+                                    points=[point_id]
+                                )
+                                existing_album_art = thumbnail
                                 log(f"✓ Fetched missing thumbnail")
-
-                    # Update sources, checksum, and optionally album_art_url in Qdrant
-                    db.client.set_payload(
-                        collection_name=db.COLLECTION,
-                        payload=payload_updates,
-                        points=[point_id]
-                    )
-
-                    # NEW: Add track to user's library (if not already there)
-                    db.add_track_to_user_library(
-                        user_id=user_id,
-                        track_id=track_id,
-                        source="gdrive" if gdrive_file_id else "local",
-                        file_path=str(file_path),
-                        gdrive_file_id=gdrive_file_id,
-                    )
-
-                    # Add user to track (if not already)
-                    db.add_user_to_track(track_id, user_id)
 
                     # Return TrackAnalysis from existing payload
                     return TrackAnalysis(
@@ -477,8 +534,8 @@ class IngestPipeline:
                         track_id=track_id,
                         spotify_track_id=payload.get("spotify_track_id") or payload.get("spotify_id"),
                         spotify_id=payload.get("spotify_id"),  # DEPRECATED
-                        sources=existing_sources,
-                        album_art_url=payload_updates.get("album_art_url") or existing_album_art,
+                        sources={},  # Not used anymore
+                        album_art_url=existing_album_art,
                         checksum=checksum,
                     )
             except Exception as e:
@@ -733,13 +790,27 @@ class IngestPipeline:
                         audio_vector=None,  # TODO: Add CLAP support
                     )
 
-                    # NEW: Add to user_library collection
+                    # NEW: Add to user_library collection with sources
+                    sources = {
+                        "local": {
+                            device_id: {
+                                "file_path": str(file_path),
+                                "checksum": checksum
+                            }
+                        },
+                        "cloud": {}
+                    }
+                    if gdrive_file_id:
+                        sources["cloud"]["gdrive"] = {
+                            "file_id": gdrive_file_id,
+                            "path": gdrive_path or "",
+                            "checksum": checksum
+                        }
+
                     db.add_track_to_user_library(
                         user_id=user_id,
                         track_id=track_id,
-                        source="gdrive" if gdrive_file_id else "local",
-                        file_path=str(file_path),
-                        gdrive_file_id=gdrive_file_id,
+                        sources=sources
                     )
 
         except Exception as e:

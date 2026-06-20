@@ -93,13 +93,20 @@ class WikiGenerator:
         print(f"Found {len(tracks)} tracks in your library")
         print()
 
-        # Generate pages
-        self._generate_track_pages(tracks)
-        self._generate_artist_pages(tracks)
-        self._generate_mood_pages(tracks)
-        self._generate_theme_pages(tracks)
-        self._generate_movie_pages(tracks)
-        self._generate_era_pages(tracks)
+        # Fetch user's sources from user_library collection
+        user_entries = self.db.get_user_library_entries(user_id, limit=10000)
+        sources_map = {
+            e.payload["track_id"]: e.payload.get("sources", {"local": {}, "cloud": {}})
+            for e in user_entries
+        }
+
+        # Generate pages (pass sources_map to methods that need it)
+        self._generate_track_pages(tracks, sources_map)
+        self._generate_artist_pages(tracks, sources_map)
+        self._generate_mood_pages(tracks, sources_map)
+        self._generate_theme_pages(tracks, sources_map)
+        self._generate_movie_pages(tracks, sources_map)
+        self._generate_era_pages(tracks, sources_map)
         self._generate_home_page(tracks)
 
         # Write owner file for security tracking
@@ -122,7 +129,7 @@ class WikiGenerator:
         ]:
             dir_path.mkdir(parents=True, exist_ok=True)
 
-    def _generate_track_pages(self, tracks):
+    def _generate_track_pages(self, tracks, sources_map):
         """Generate individual track pages with play button."""
         print(f"📝 Generating track pages...")
 
@@ -137,7 +144,7 @@ class WikiGenerator:
             file_path = self.tracks_dir / f"{filename}.md"
 
             # Build page content with audio player (single track playlist)
-            content = self._get_audio_player_script([p], title)
+            content = self._get_audio_player_script([p], title, sources_map)
             content += "\n\n"
             content += self._build_track_page(p)
 
@@ -249,7 +256,7 @@ class WikiGenerator:
 
         return "\n".join(lines)
 
-    def _generate_artist_pages(self, tracks):
+    def _generate_artist_pages(self, tracks, sources_map):
         """Generate artist index pages with interactive audio player."""
         print(f"👤 Generating artist pages...")
 
@@ -266,13 +273,13 @@ class WikiGenerator:
             file_path = self.artists_dir / f"{filename}.md"
 
             # Use audio player script for artist pages
-            lines = [self._get_audio_player_script(artist_tracks, artist)]
+            lines = [self._get_audio_player_script(artist_tracks, artist, sources_map)]
 
             file_path.write_text("\n".join(lines), encoding="utf-8")
 
         print(f"   ✓ {len(artists_tracks)} artist pages")
 
-    def _generate_mood_pages(self, tracks):
+    def _generate_mood_pages(self, tracks, sources_map):
         """Generate mood index pages with interactive audio player."""
         print(f"😊 Generating mood pages...")
 
@@ -288,13 +295,13 @@ class WikiGenerator:
             filename = self._sanitize_filename(mood.title())
             file_path = self.moods_dir / f"{filename}.md"
 
-            lines = [self._get_audio_player_script(mood_tracks, mood.title())]
+            lines = [self._get_audio_player_script(mood_tracks, mood.title(), sources_map)]
 
             file_path.write_text("\n".join(lines), encoding="utf-8")
 
         print(f"   ✓ {len(moods_tracks)} mood pages")
 
-    def _generate_theme_pages(self, tracks):
+    def _generate_theme_pages(self, tracks, sources_map):
         """Generate theme index pages with interactive audio player."""
         print(f"🎭 Generating theme pages...")
 
@@ -310,13 +317,13 @@ class WikiGenerator:
             filename = self._sanitize_filename(theme.title())
             file_path = self.themes_dir / f"{filename}.md"
 
-            lines = [self._get_audio_player_script(theme_tracks, theme.title())]
+            lines = [self._get_audio_player_script(theme_tracks, theme.title(), sources_map)]
 
             file_path.write_text("\n".join(lines), encoding="utf-8")
 
         print(f"   ✓ {len(themes_tracks)} theme pages")
 
-    def _generate_movie_pages(self, tracks):
+    def _generate_movie_pages(self, tracks, sources_map):
         """Generate movie/album index pages with interactive audio player."""
         print(f"🎬 Generating movie pages...")
 
@@ -334,13 +341,13 @@ class WikiGenerator:
             file_path = self.movies_dir / f"{filename}.md"
 
             # Use audio player script for movie pages
-            lines = [self._get_audio_player_script(movie_tracks, movie)]
+            lines = [self._get_audio_player_script(movie_tracks, movie, sources_map)]
 
             file_path.write_text("\n".join(lines), encoding="utf-8")
 
         print(f"   ✓ {len(movies_tracks)} movie pages")
 
-    def _generate_era_pages(self, tracks):
+    def _generate_era_pages(self, tracks, sources_map):
         """Generate era index pages with interactive audio player."""
         print(f"📅 Generating era pages...")
 
@@ -358,7 +365,7 @@ class WikiGenerator:
             file_path = self.eras_dir / f"{filename}.md"
 
             # Use audio player script for era pages
-            lines = [self._get_audio_player_script(era_tracks, era)]
+            lines = [self._get_audio_player_script(era_tracks, era, sources_map)]
 
             file_path.write_text("\n".join(lines), encoding="utf-8")
 
@@ -494,7 +501,7 @@ class WikiGenerator:
         lines.append('</div>')
         return "\n".join(lines)
 
-    def _get_audio_player_script(self, tracks: List[dict], page_title: str = "") -> str:
+    def _get_audio_player_script(self, tracks: List[dict], page_title: str = "", sources_map: dict = None) -> str:
         """
         Get vectrola code block for audio player with embedded playlist.
 
@@ -507,6 +514,7 @@ class WikiGenerator:
         Args:
             tracks: List of track payload dictionaries
             page_title: Title to display at top of page
+            sources_map: Map of track_id to user's sources (from user_library)
 
         Returns:
             Vectrola code block as a string (JSON config for the plugin)
@@ -514,6 +522,7 @@ class WikiGenerator:
         # Build playlist data with sources, duration, and artwork
         playlist = []
         total_duration_ms = 0
+        sources_map = sources_map or {}
 
         for i, p in enumerate(tracks):
             title = p.get("title", "Unknown")
@@ -524,8 +533,8 @@ class WikiGenerator:
             # Duration: prefer duration_ms, fallback to duration_seconds * 1000
             duration_ms = p.get("duration_ms") or int((p.get("duration_seconds") or 0) * 1000)
 
-            # Get sources from Qdrant payload
-            sources = p.get("sources", {"local": {}, "cloud": {}})
+            # Get sources from sources_map (user_library), not from track payload
+            sources = sources_map.get(track_id, {"local": {}, "cloud": {}})
 
             # Get first mood for gradient fallback
             moods = p.get("moods", [])

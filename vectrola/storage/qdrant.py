@@ -229,9 +229,7 @@ class VectrolaDB:
         self,
         user_id: str,
         track_id: str,
-        source: str = "local",
-        file_path: Optional[str] = None,
-        gdrive_file_id: Optional[str] = None,
+        sources: dict,
     ) -> str:
         """
         Add a track to user's library (user_library collection).
@@ -239,9 +237,9 @@ class VectrolaDB:
         Args:
             user_id: User ID
             track_id: 16-char track hash
-            source: "local" or "gdrive"
-            file_path: Local file path (if source=local)
-            gdrive_file_id: Google Drive file ID (if source=gdrive)
+            sources: Full sources object with device-level checksums
+                     Format: {"local": {"device": {"file_path": "...", "checksum": "..."}},
+                              "cloud": {"gdrive": {"file_id": "...", "path": "...", "checksum": "..."}}}
 
         Returns:
             Library entry UUID
@@ -254,14 +252,9 @@ class VectrolaDB:
         payload = {
             "user_id": user_id,
             "track_id": track_id,
-            "source": source,
+            "sources": sources,
             "added_at": datetime.utcnow().isoformat(),
         }
-
-        if file_path:
-            payload["file_path"] = file_path
-        if gdrive_file_id:
-            payload["gdrive_file_id"] = gdrive_file_id
 
         self.client.upsert(
             collection_name=self.USER_LIBRARY_COLLECTION,
