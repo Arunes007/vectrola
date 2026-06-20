@@ -2,12 +2,30 @@
 
 Complete reference for the track payload schema stored in Qdrant.
 
-## Collection
+## Collections
 
+### vectrola_library (Tracks Catalog)
 - **Name:** `vectrola_library`
 - **Vectors:** Named vectors (see [Embedding Vectors](#embedding-vectors))
+- **Purpose:** Shared track catalog with metadata and embeddings
 
-## Full Schema
+### user_library (User-Track Mapping)
+- **Name:** `user_library`
+- **Vectors:** None (payload-only collection)
+- **Purpose:** Many-to-many mapping between users and tracks (inverted index)
+
+## Recent Changes (June 2026)
+
+**Multi-Tenant Architecture Migration:**
+- `track_id` format changed from `spotify:xxx` / `hash:xxx` to always 16-char hash
+- `user_ids` array removed from track payloads
+- New `user_library` collection for user-track mappings (inverted index)
+- Added `spotify_track_id` field (separate from `track_id`)
+- `spotify_id` field deprecated (use `spotify_track_id` instead)
+
+See [multitenancy.md](multitenancy.md) for architecture details.
+
+## Full Schema (vectrola_library)
 
 ```json
 {
@@ -31,9 +49,10 @@ Complete reference for the track payload schema stored in Qdrant.
   "narrative": "A deeply romantic song about being incomplete without one's beloved...",
   "imagery": ["rain", "empty streets", "moonlight"],
 
-  // Track Identification
-  "track_id": "spotify:4PTG3Z6ehGkBFwjybzWkR8",
-  "spotify_id": "4PTG3Z6ehGkBFwjybzWkR8",
+  // Track Identification (NEW FORMAT)
+  "track_id": "fc0e05124b666d58",               // 16-char hash (NEW)
+  "spotify_track_id": "4PTG3Z6ehGkBFwjybzWkR8",  // Separate field (NEW)
+  "spotify_id": "4PTG3Z6ehGkBFwjybzWkR8",        // DEPRECATED
   "checksum": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
 
   // Multi-Device Sources
@@ -50,8 +69,7 @@ Complete reference for the track payload schema stored in Qdrant.
     }
   },
 
-  // Multi-Tenant
-  "user_ids": ["arunes007", "user_xyz"],
+  // NOTE: user_ids field REMOVED - now tracked in user_library collection
 
   // Album Art
   "album_art_url": "https://i.scdn.co/image/ab67616d0000b273..."
@@ -99,13 +117,26 @@ Complete reference for the track payload schema stored in Qdrant.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `track_id` | string | Canonical ID: `"spotify:<id>"` or `"hash:<md5[:16]>"` |
-| `spotify_id` | string | Spotify track ID (nullable) |
+| `track_id` | string | **Always** 16-char MD5 hash of normalized `artist:title` |
+| `spotify_track_id` | string | Spotify track ID (nullable, for backward compatibility) |
+| `spotify_id` | string | **DEPRECATED** - Use `spotify_track_id` instead |
 | `checksum` | string | MD5 hash of audio file content (32 hex chars) |
 
 **track_id Format:**
-- If Spotify match found: `spotify:4PTG3Z6ehGkBFwjybzWkR8`
-- Otherwise: `hash:a1b2c3d4e5f6g7h8` (MD5 of normalized `artist:title`)
+- **Always** a 16-char hex hash: `a1b2c3d4e5f6g7h8`
+- Generated from normalized artist + title (lowercase, no special chars, no featuring artists)
+- Example: `"Arijit Singh ft. Shreya"` + `"Tum Hi Ho!"` → `"fc0e05124b666d58"`
+
+**Normalization Rules:**
+- Strip featuring artists (`ft.`, `feat.`, `featuring`)
+- Remove special characters (keep only letters/numbers)
+- Convert to lowercase
+- MD5 hash the result, take first 16 chars
+
+**spotify_track_id:**
+- Separate field for Spotify ID (no prefix)
+- Example: `"4PTG3Z6ehGkBFwjybzWkR8"`
+- Used for fetching metadata, artwork, etc.
 
 ### Multi-Device Sources
 
@@ -140,13 +171,33 @@ Complete reference for the track payload schema stored in Qdrant.
 3. `sources.cloud.gdrive` — Google Drive
 4. Any `sources.cloud.*` — Other cloud providers
 
-### Multi-Tenant
+### Multi-Tenant: User Library Collection
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `user_ids` | list[string] | Users who have this track in their library |
+User ownership is tracked in a **separate collection** (`user_library`) using an inverted index pattern:
 
-When a user ingests a track that already exists (by checksum or title+artist), their user_id is added to `user_ids` without re-running analysis.
+**Collection:** `user_library` (payload-only, no vectors)
+
+**Schema:**
+```json
+{
+  "user_id": "arunes007",                  // Indexed (KEYWORD)
+  "track_id": "fc0e05124b666d58",          // Indexed (KEYWORD), 16-char hash
+  "source": "local" | "gdrive",
+  "file_path": "/path/to/file.mp3",        // If source=local
+  "gdrive_file_id": "1abc...",             // If source=gdrive
+  "added_at": "2026-06-20T10:00:00Z"
+}
+```
+
+**Why Separate Collection?**
+- Scales to billions of users per track (vs 100K limit with arrays)
+- O(1) indexed lookup (vs O(n) array scan)
+- 50x+ faster search performance at scale
+- No update contention (append-only)
+
+**Query Pattern:**
+1. Fetch user's track IDs from `user_library` (indexed by `user_id`)
+2. Query `vectrola_library` tracks (indexed by `track_id`)
 
 ### Album Art
 
@@ -167,11 +218,19 @@ The collection uses **named vectors** for multimodal search:
 
 ## Indexes
 
+### vectrola_library Collection
+
 | Field | Index Type | Purpose |
 |-------|-----------|---------|
-| `track_id` | KEYWORD | Fast track existence check |
-| `checksum` | KEYWORD | Deduplication tier 1 |
-| `user_ids` | KEYWORD | Multi-tenant filtering |
+| `track_id` | KEYWORD | Fast track lookup (16-char hash) |
+| `checksum` | KEYWORD | Deduplication tier 1 (exact file match) |
+
+### user_library Collection
+
+| Field | Index Type | Purpose |
+|-------|-----------|---------|
+| `user_id` | KEYWORD | Fast user library lookup |
+| `track_id` | KEYWORD | Join key for track details |
 
 ## Example: Minimal Payload
 
@@ -179,13 +238,12 @@ The collection uses **named vectors** for multimodal search:
 {
   "title": "Unknown Track",
   "artists": [],
-  "track_id": "hash:a1b2c3d4e5f6g7h8",
+  "track_id": "a1b2c3d4e5f6g7h8",
   "checksum": "md5hashoffile...",
   "sources": {
     "local": {"LYFVFXPHVW": "/path/to/file.mp3"},
     "cloud": {}
   },
-  "user_ids": ["anon_abc123"],
   "moods": [],
   "themes": []
 }
@@ -212,7 +270,8 @@ The collection uses **named vectors** for multimodal search:
   "narrative": "A deeply romantic song expressing how the singer feels incomplete without their beloved. The lyrics convey intense emotional dependency and devotion.",
   "imagery": ["empty room", "tears", "moonlight"],
   "metadata_source": "spotify",
-  "track_id": "spotify:4PTG3Z6ehGkBFwjybzWkR8",
+  "track_id": "fc0e05124b666d58",
+  "spotify_track_id": "4PTG3Z6ehGkBFwjybzWkR8",
   "spotify_id": "4PTG3Z6ehGkBFwjybzWkR8",
   "checksum": "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6",
   "sources": {
@@ -226,7 +285,6 @@ The collection uses **named vectors** for multimodal search:
       }
     }
   },
-  "user_ids": ["arunes007"],
   "album_art_url": "https://i.scdn.co/image/ab67616d0000b273..."
 }
 ```

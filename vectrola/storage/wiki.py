@@ -448,15 +448,22 @@ class WikiGenerator:
             title = p.get("title", "Unknown")
             artists = p.get("artists", [])
             track_id = p.get("track_id", "")
+            spotify_track_id = p.get("spotify_track_id") or p.get("spotify_id")  # NEW
             sources = p.get("sources", {"local": {}, "cloud": {}})
 
-            playlist.append({
+            track_data = {
                 "id": f"track-{i}",
                 "title": title,
                 "artist": ", ".join(artists[:1]) if artists else "Unknown",
                 "sources": sources,
                 "track_id": track_id,
-            })
+            }
+
+            # Add spotify_track_id if available (for backward compatibility with plugin)
+            if spotify_track_id:
+                track_data["spotify_track_id"] = spotify_track_id
+
+            playlist.append(track_data)
 
         json_str = json.dumps(playlist, ensure_ascii=False)
         return f'<div id="playlist-data" style="display:none">{json_str}</div>'
@@ -513,6 +520,7 @@ class WikiGenerator:
             artists = p.get("artists", [])
             track_link = self._sanitize_filename(title)
             track_id = p.get("track_id", "")
+            spotify_track_id = p.get("spotify_track_id") or p.get("spotify_id")  # NEW
             # Duration: prefer duration_ms, fallback to duration_seconds * 1000
             duration_ms = p.get("duration_ms") or int((p.get("duration_seconds") or 0) * 1000)
 
@@ -523,7 +531,7 @@ class WikiGenerator:
             moods = p.get("moods", [])
             first_mood = moods[0] if moods else None
 
-            playlist.append({
+            track_data = {
                 "id": f"track-{i}",
                 "title": title,
                 "artist": ", ".join(artists[:1]) if artists else "Unknown",
@@ -534,7 +542,13 @@ class WikiGenerator:
                 "sources": sources,
                 "track_id": track_id,
                 "link": track_link,
-            })
+            }
+
+            # Add spotify_track_id if available (for backward compatibility with plugin)
+            if spotify_track_id:
+                track_data["spotify_track_id"] = spotify_track_id
+
+            playlist.append(track_data)
             total_duration_ms += duration_ms or 0
 
         # Determine artwork for the page

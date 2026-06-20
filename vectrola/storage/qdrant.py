@@ -719,13 +719,20 @@ class VectrolaDB:
         Returns:
             List of Records owned by the user
         """
+        # Get user's track IDs from user_library collection
+        track_ids = self.get_user_track_ids(user_id, limit=limit)
+
+        if not track_ids:
+            return []
+
+        # Fetch track details from vectrola_library collection
         results = self.client.scroll(
             collection_name=self.COLLECTION,
             scroll_filter=models.Filter(
                 must=[
                     models.FieldCondition(
-                        key="user_ids",
-                        match=models.MatchAny(any=[user_id]),
+                        key="track_id",
+                        match=models.MatchAny(any=track_ids[:1000]),  # Qdrant limit
                     )
                 ]
             ),
