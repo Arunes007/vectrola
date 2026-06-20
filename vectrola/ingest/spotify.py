@@ -89,11 +89,35 @@ class SpotifyFetcher:
         if not album_id:
             return None
 
+        from threading import Thread
+
         try:
             from spotapi import PublicAlbum
 
-            album = PublicAlbum(album_id)
-            info = album.get_album_info()
+            # Use threading for timeout (signal doesn't work with curl_cffi)
+            result_container = {'info': None, 'error': None}
+
+            def fetch_thread():
+                try:
+                    album = PublicAlbum(album_id)
+                    result_container['info'] = album.get_album_info()
+                except Exception as e:
+                    result_container['error'] = e
+
+            thread = Thread(target=fetch_thread, daemon=True)
+            thread.start()
+            thread.join(timeout=5)  # 5 second timeout
+
+            if thread.is_alive():
+                # Timeout - year is optional so just return None
+                return None
+
+            if result_container['error']:
+                raise result_container['error']
+
+            info = result_container['info']
+            if not info:
+                return None
 
             # Extract year from album data
             album_data = info.get('data', {}).get('albumUnion', {})
@@ -122,13 +146,38 @@ class SpotifyFetcher:
         Returns:
             List of SpotifyTrack matches
         """
+        from threading import Thread
+        import time
+
         try:
             # Build search query
             query = title
             if artist:
                 query = f"{title} {artist}"
 
-            results = self.client.query_songs(query, limit=limit)
+            # Use threading for timeout (signal doesn't work with curl_cffi)
+            result_container = {'results': None, 'error': None}
+
+            def search_thread():
+                try:
+                    result_container['results'] = self.client.query_songs(query, limit=limit)
+                except Exception as e:
+                    result_container['error'] = e
+
+            thread = Thread(target=search_thread, daemon=True)
+            thread.start()
+            thread.join(timeout=10)  # 10 second timeout
+
+            if thread.is_alive():
+                print(f"Spotify search timeout for: {query}")
+                return []
+
+            if result_container['error']:
+                raise result_container['error']
+
+            results = result_container['results']
+            if not results:
+                return []
 
             items = (results.get('data', {})
                      .get('searchV2', {})
