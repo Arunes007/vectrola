@@ -77,7 +77,7 @@ When a duplicate is found:
 
 1. **Merge `sources`** in Qdrant → add new device path to existing sources
 2. **Update `checksum`** in Qdrant → for future tier 1 matching
-3. **Add user to `user_ids`** → multi-tenant support
+3. **Add to user library** → create entry in `user_library` collection linking user to track
 4. **Return existing analysis** → skip Spotify/lyrics/LLM/embeddings
 
 ```python
@@ -96,8 +96,13 @@ if existing:
         points=[point_id]
     )
     
-    # Add user to track
-    db.add_user_to_track(track_id, user_id)
+    # Add user to library (separate collection)
+    db.add_track_to_user_library(
+        user_id=user_id,
+        track_id=track_id,
+        source="local",
+        file_path=str(file_path)
+    )
     
     # Return existing TrackAnalysis (skip full pipeline)
     return TrackAnalysis(...)
@@ -110,10 +115,13 @@ The following fields are used for deduplication:
 | Field | Type | Description |
 |-------|------|-------------|
 | `checksum` | string | MD5 hex digest of file content (32 chars) |
-| `track_id` | string | Canonical ID: `spotify:xxx` or `hash:xxx` |
+| `track_id` | string | 16-char MD5 hash of normalized artist + title |
+| `spotify_track_id` | string | Spotify track ID (stored separately, nullable) |
 | `title` | string | Track title (from file tags or Spotify) |
 | `artists` | list[string] | Artist names |
 | `sources` | object | Multi-device/cloud paths (see below) |
+
+**Note:** The `track_id` is always a 16-char hash regardless of whether a Spotify match is found. Spotify IDs are stored separately in the `spotify_track_id` field. See [schema.md](schema.md) for complete field reference.
 
 ### Sources Schema
 

@@ -39,9 +39,10 @@ See **[schema.md](schema.md)** for the complete payload schema reference.
 Key fields include:
 - `title`, `artists`, `album`, `movie`, `year`
 - `moods`, `themes`, `narrative` (AI analysis)
-- `track_id`, `checksum` (deduplication)
+- `track_id`, `spotify_track_id`, `checksum` (deduplication)
 - `sources` (multi-device local/cloud paths)
-- `user_ids` (multi-tenant)
+
+**Note:** User ownership is tracked in a separate `user_library` collection (not in track payloads). See [multitenancy.md](multitenancy.md) for details on the inverted index architecture.
 
 ## Python API
 

@@ -304,24 +304,43 @@ $ vectrola ingest /bob-music/
 
 ### "My searches return no results"
 
-If multi-tenant is ON but your tracks have a different user_id:
+If multi-tenant is ON but your user library is empty or pointing to a different user:
 
 ```bash
 # Check current user
 vectrola whoami
 
-# Check what user_ids tracks have
+# Check what tracks are in your library
 python -c "
 from vectrola.storage.qdrant import get_db
+from vectrola.config import get_or_create_user_id
+from qdrant_client import models
+
 db = get_db()
-tracks = db.list_all(limit=3)
-for t in tracks:
-    print(f'{t.payload.get(\"title\")}: {t.payload.get(\"user_ids\")}')
+user_id = get_or_create_user_id()
+
+# Get your track IDs from user_library
+track_ids = db.get_user_track_ids(user_id)
+print(f'User {user_id} has {len(track_ids)} tracks in library')
+
+if track_ids:
+    # Get track details
+    results = db.client.scroll(
+        collection_name='vectrola_library',
+        scroll_filter=models.Filter(
+            must=[models.FieldCondition(
+                key='track_id',
+                match=models.MatchAny(any=track_ids[:3])
+            )]
+        ),
+        limit=3
+    )
+    for t in results[0]:
+        print(f'  - {t.payload.get(\"title\")}: {t.payload.get(\"track_id\")}')
 "
 
-# If mismatched, run migration
-vectrola login  # with correct email
-python scripts/migrate_to_multitenancy.py
+# If empty, re-ingest your music or migrate users
+vectrola ingest /path/to/music
 ```
 
 ### "I want to reset to anonymous"
