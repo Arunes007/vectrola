@@ -265,19 +265,18 @@ Edit `vectrola/storage/wiki.py` to customize:
 
 ## Limitations
 
-- **Manual Sync**: Wiki doesn't auto-update when Qdrant changes
-- **Static Content**: No dynamic queries (use Dataview plugin for that)
-- **Desktop Only for Playback**: Audio player uses `file://` protocol, works only on desktop Obsidian
+- **Manual Sync**: Wiki doesn't auto-update when Qdrant changes (re-run `vectrola wiki` to regenerate)
+- **Static Content**: No dynamic queries within the wiki itself
+- **Desktop Only for Playback**: Audio player requires desktop Obsidian and the vectrola-sync plugin
 
 ## Audio Player (Day 6)
 
-Mood and theme pages now include an **interactive audio player**! Click 🎵 to play tracks directly from your local music library.
+Mood and theme pages now include an **interactive audio player**! Click 🎵 to play tracks directly from your local music library or Google Drive.
 
 ### Requirements
 
-1. **Dataview Plugin**: Install and enable the Dataview community plugin
-2. **Enable JavaScript**: In Dataview settings, turn on "Enable JavaScript Queries"
-3. **Desktop Obsidian**: Audio playback requires desktop app (not mobile)
+1. **Vectrola Sync Plugin**: Install the [vectrola-sync](https://github.com/Arunes007/obsidian-vectrola-sync) plugin (see [installation guide](obsidian-plugin.md))
+2. **Desktop Obsidian**: Audio playback requires desktop app (not mobile)
 
 ### Features
 
@@ -294,27 +293,28 @@ Mood and theme pages now include an **interactive audio player**! Click 🎵 to 
 
 ### How It Works
 
-The wiki generator embeds:
-1. Hidden JSON playlist data
-2. HTML track list with play buttons
-3. DataviewJS script for the player
+The vectrola-sync plugin provides:
+1. Audio player UI embedded in mood/theme pages
+2. Support for local files (`file://` protocol) and Google Drive streaming
+3. Playlist management with shuffle/repeat modes
+4. Progress tracking and seeking
 
-The player uses HTML5 Audio API with `file://` protocol to play local MP3s.
+The plugin handles both playback sources automatically - local files for offline use, Google Drive for cross-device streaming.
 
 ### Troubleshooting
 
 **"No playback / silence"**
-- Verify Dataview plugin is installed and JavaScript queries enabled
+- Verify vectrola-sync plugin is installed and enabled
 - Check that file paths in Qdrant are correct
-- Use desktop Obsidian (mobile doesn't support `file://`)
+- Use desktop Obsidian (mobile doesn't support audio playback)
 
 **"Player bar doesn't appear"**
-- Enable JavaScript queries in Dataview settings
-- Check browser console for errors (press Cmd+Option+I)
+- Install the vectrola-sync plugin from [GitHub](https://github.com/Arunes007/obsidian-vectrola-sync)
+- Check Obsidian console for errors (press Cmd+Option+I)
 
 **"Tracks won't play"**
-- Ensure MP3 files exist at the stored paths
-- Some browsers block `file://` access; Obsidian's Electron shell allows it
+- For local files: Ensure MP3 files exist at the stored paths
+- For GDrive: Authenticate with `vectrola gdrive auth` and ensure tracks have `gdrive_file_id`
 
 ## Example Workflows
 

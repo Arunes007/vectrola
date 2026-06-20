@@ -36,6 +36,8 @@ Browse your library by mood with an integrated audio player:
 
 *Select any mood from the sidebar to see matching tracks. Click to play directly in Obsidian with the Spotify-like player bar at the bottom. The "Timeless" era shows 102 songs with play/shuffle controls.*
 
+**Required for playback:** Install the [vectrola-sync](https://github.com/Arunes007/obsidian-vectrola-sync) Obsidian plugin. It provides the audio player and handles both local file playback and Google Drive streaming.
+
 ## Quick Install
 
 **macOS / Linux:**
@@ -92,7 +94,15 @@ vectrola similar "Tum Hi Ho"
 
 # Generate Obsidian wiki
 vectrola wiki
+
+# Sync wiki to Google Drive (for cross-device access)
+vectrola wiki --sync
 ```
+
+**Required Plugin:** To view and play music in Obsidian, install the [vectrola-sync](https://github.com/Arunes007/obsidian-vectrola-sync) plugin. It provides:
+- Interactive audio player with local and Google Drive streaming
+- Automatic wiki sync from Google Drive
+- Cross-device access to your music library
 
 ### Google Drive Integration
 
