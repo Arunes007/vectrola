@@ -68,11 +68,14 @@ def ingest(
     fast: bool = typer.Option(True, "--fast/--slow", "-f/-s", help="Skip Demucs stem separation (faster)"),
     write_tags: bool = typer.Option(True, "--tags/--no-tags", help="Write analysis to file tags"),
     force: bool = typer.Option(False, "--force", "-F", help="Skip dedup check and re-analyze existing tracks"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress for each track"),
 ):
     """
     Ingest audio files into the knowledge graph.
 
     Transcribes lyrics and extracts semantic metadata (themes, moods, narrative).
+
+    By default shows a progress bar. Use --verbose to see detailed per-track output.
     """
     from vectrola.ingest.pipeline import IngestPipeline
     from vectrola.services.failed_ingests import FailedIngestsManager, detect_error_stage
@@ -103,24 +106,79 @@ def ingest(
     pipeline = IngestPipeline(use_stems=not fast)
     fm = FailedIngestsManager()
 
-    # Process files with simple progress
+    # Process files with conditional output
     results = []
     errors = []
+    stats = {"new": 0, "existing": 0, "errors": 0}
 
-    for i, file in enumerate(files, 1):
-        print(f"[{i}/{total}] {file.name}", flush=True)
-        try:
-            result = pipeline.process_track(file, write_file_tags=write_tags, force=force)
-            results.append(result)
-            moods_str = ", ".join(result.moods[:3]) if result.moods else "no moods"
-            print(f"   ✓ Done: {moods_str}")
+    if verbose:
+        # VERBOSE MODE: Show detailed per-track output (original behavior)
+        for i, file in enumerate(files, 1):
+            print(f"[{i}/{total}] {file.name}", flush=True)
+            try:
+                result = pipeline.process_track(
+                    file,
+                    write_file_tags=write_tags,
+                    verbose=True,
+                    force=force
+                )
+                results.append(result)
 
-            # Remove from failed list if it was there (successful re-ingest)
-            fm.remove_failed(f"local:{file}")
+                # Track stats
+                if hasattr(result, '_was_deduplicated') and result._was_deduplicated:
+                    stats["existing"] += 1
+                else:
+                    stats["new"] += 1
 
-        except Exception as e:
-            errors.append((file, str(e)))
-            print(f"   ✗ Error: {e}")
+                moods_str = ", ".join(result.moods[:3]) if result.moods else "no moods"
+                print(f"   ✓ Done: {moods_str}")
+
+                # Remove from failed list if it was there (successful re-ingest)
+                fm.remove_failed(f"local:{file}")
+
+            except Exception as e:
+                errors.append((file, str(e)))
+                stats["errors"] += 1
+                print(f"   ✗ Error: {e}")
+
+    else:
+        # DEFAULT MODE: Show progress bar only (like refresh command)
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            console=console,
+            transient=False,
+        ) as progress:
+            task = progress.add_task("Ingesting tracks", total=total)
+
+            for file in files:
+                try:
+                    result = pipeline.process_track(
+                        file,
+                        write_file_tags=write_tags,
+                        verbose=False,
+                        force=force
+                    )
+                    results.append(result)
+
+                    # Track stats
+                    if hasattr(result, '_was_deduplicated') and result._was_deduplicated:
+                        stats["existing"] += 1
+                    else:
+                        stats["new"] += 1
+
+                    # Remove from failed list if it was there (successful re-ingest)
+                    fm.remove_failed(f"local:{file}")
+
+                except Exception as e:
+                    errors.append((file, str(e)))
+                    stats["errors"] += 1
+                    # Show errors even in non-verbose mode
+                    progress.console.print(f"[red]✗ {file.name}: {str(e)}[/red]")
+
+                progress.advance(task)
 
     # Save failures for retry
     if errors:
@@ -135,9 +193,17 @@ def ingest(
 
     # Summary
     print()
-    print(f"✅ Processed: {len(results)}/{total} tracks")
-    if errors:
-        print(f"❌ Failed: {len(errors)}/{total} tracks")
+    if stats["errors"] == 0:
+        print(f"✅ Ingested {len(results)} tracks")
+    else:
+        print(f"✅ Processed: {len(results)}/{total} tracks")
+
+    if stats["existing"] > 0:
+        print(f"   • {stats['existing']} existing (skipped analysis)")
+    if stats["new"] > 0:
+        print(f"   • {stats['new']} new (full pipeline)")
+    if stats["errors"] > 0:
+        print(f"   ❌ {stats['errors']} errors")
         console.print("[yellow]To retry failed tracks, just run the same ingest command again.[/yellow]")
         console.print("[dim]Successfully processed tracks will be skipped (dedup).[/dim]")
 

@@ -252,6 +252,9 @@ class TrackAnalysis:
     # Deduplication
     checksum: str = ""  # MD5 hash of audio file content
 
+    # Internal flag for CLI stats (not stored in DB)
+    _was_deduplicated: bool = field(default=False, repr=False)
+
     def to_dict(self) -> dict:
         """Convert to dictionary for storage."""
         return {
@@ -537,6 +540,7 @@ class IngestPipeline:
                         sources={},  # Not used anymore
                         album_art_url=existing_album_art,
                         checksum=checksum,
+                        _was_deduplicated=True,  # ← Mark as existing
                     )
             except Exception as e:
                 log(f"Dedup check skipped: {e}")
