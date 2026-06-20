@@ -26,6 +26,7 @@ class VectrolaDB:
     """
 
     COLLECTION = "vectrola_library"
+    USER_LIBRARY_COLLECTION = "user_library"  # NEW: User-track mapping
     LYRICS_VECTOR_SIZE = 384  # all-MiniLM-L6-v2
     ACOUSTIC_VECTOR_SIZE = 512  # CLAP (Day 3)
 
@@ -70,7 +71,7 @@ class VectrolaDB:
         return self._client
 
     def _ensure_collection(self):
-        """Create collection with named vectors if not exists."""
+        """Create collections if not exists."""
         try:
             collections = [c.name for c in self._client.get_collections().collections]
 
@@ -93,27 +94,20 @@ class VectrolaDB:
             # Create payload indexes for efficient filtering (Day 7)
             self._ensure_indexes()
 
+            # NEW: Create user_library collection
+            self._ensure_user_library_collection()
+
         except Exception as e:
             print(f"Error ensuring collection: {e}")
             raise
 
     def _ensure_indexes(self):
-        """Create payload indexes for track_id and user_ids filtering."""
+        """Create payload indexes for track_id filtering."""
         try:
             # Index for track_id (deduplication lookups)
             self._client.create_payload_index(
                 collection_name=self.COLLECTION,
                 field_name="track_id",
-                field_schema=models.PayloadSchemaType.KEYWORD,
-            )
-        except Exception:
-            pass  # Index may already exist
-
-        try:
-            # Index for user_ids (multi-tenant filtering)
-            self._client.create_payload_index(
-                collection_name=self.COLLECTION,
-                field_name="user_ids",
                 field_schema=models.PayloadSchemaType.KEYWORD,
             )
         except Exception:
@@ -128,6 +122,48 @@ class VectrolaDB:
             )
         except Exception:
             pass  # Index may already exist
+
+    def _ensure_user_library_collection(self):
+        """Create user_library collection for many-to-many user-track mapping."""
+        try:
+            collections = [c.name for c in self._client.get_collections().collections]
+
+            if self.USER_LIBRARY_COLLECTION not in collections:
+                # No vectors needed - this is pure payload storage
+                self._client.create_collection(
+                    collection_name=self.USER_LIBRARY_COLLECTION,
+                    vectors_config={}  # Empty = payload-only collection
+                )
+                print(f"✓ Created collection '{self.USER_LIBRARY_COLLECTION}'")
+
+            # Create indexes for fast filtering
+            self._ensure_user_library_indexes()
+
+        except Exception as e:
+            print(f"Error ensuring user_library collection: {e}")
+            raise
+
+    def _ensure_user_library_indexes(self):
+        """Create indexes for user_id and track_id filtering."""
+        try:
+            # Index for user_id (primary filter)
+            self._client.create_payload_index(
+                collection_name=self.USER_LIBRARY_COLLECTION,
+                field_name="user_id",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass  # May already exist
+
+        try:
+            # Index for track_id (join key)
+            self._client.create_payload_index(
+                collection_name=self.USER_LIBRARY_COLLECTION,
+                field_name="track_id",
+                field_schema=models.PayloadSchemaType.KEYWORD,
+            )
+        except Exception:
+            pass
 
     def _generate_id(self, identifier: str) -> str:
         """Generate deterministic UUID from identifier (track_id or file_path)."""
@@ -189,9 +225,159 @@ class VectrolaDB:
         except Exception:
             return None
 
+    def add_track_to_user_library(
+        self,
+        user_id: str,
+        track_id: str,
+        source: str = "local",
+        file_path: Optional[str] = None,
+        gdrive_file_id: Optional[str] = None,
+    ) -> str:
+        """
+        Add a track to user's library (user_library collection).
+
+        Args:
+            user_id: User ID
+            track_id: 16-char track hash
+            source: "local" or "gdrive"
+            file_path: Local file path (if source=local)
+            gdrive_file_id: Google Drive file ID (if source=gdrive)
+
+        Returns:
+            Library entry UUID
+        """
+        from datetime import datetime
+
+        # Generate unique ID for this library entry
+        entry_id = str(uuid.uuid4())
+
+        payload = {
+            "user_id": user_id,
+            "track_id": track_id,
+            "source": source,
+            "added_at": datetime.utcnow().isoformat(),
+        }
+
+        if file_path:
+            payload["file_path"] = file_path
+        if gdrive_file_id:
+            payload["gdrive_file_id"] = gdrive_file_id
+
+        self.client.upsert(
+            collection_name=self.USER_LIBRARY_COLLECTION,
+            points=[
+                models.PointStruct(
+                    id=entry_id,
+                    vector={},  # No vectors in this collection
+                    payload=payload,
+                )
+            ],
+        )
+
+        return entry_id
+
+    def get_user_track_ids(self, user_id: str, limit: int = 10000) -> list[str]:
+        """
+        Get all track IDs in user's library.
+
+        Args:
+            user_id: User ID
+            limit: Max tracks to return (use pagination for >10K)
+
+        Returns:
+            List of 16-char track hashes
+        """
+        results = self.client.scroll(
+            collection_name=self.USER_LIBRARY_COLLECTION,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="user_id",
+                        match=models.MatchValue(value=user_id),
+                    )
+                ]
+            ),
+            limit=limit,
+            with_vectors=False,
+        )
+
+        return [r.payload["track_id"] for r in results[0]]
+
+    def get_user_library_entries(
+        self,
+        user_id: str,
+        limit: int = 10000
+    ) -> list[models.Record]:
+        """
+        Get all library entries for a user (with file paths, GDrive IDs, etc.).
+
+        Args:
+            user_id: User ID
+            limit: Max entries to return
+
+        Returns:
+            List of Records with full payload
+        """
+        results = self.client.scroll(
+            collection_name=self.USER_LIBRARY_COLLECTION,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="user_id",
+                        match=models.MatchValue(value=user_id),
+                    )
+                ]
+            ),
+            limit=limit,
+            with_vectors=False,
+        )
+
+        return results[0]
+
+    def remove_track_from_user_library(
+        self,
+        user_id: str,
+        track_id: str
+    ) -> bool:
+        """
+        Remove a track from user's library.
+
+        Args:
+            user_id: User ID
+            track_id: 16-char track hash
+
+        Returns:
+            True if removed, False if not found
+        """
+        # Find the library entry
+        results = self.client.scroll(
+            collection_name=self.USER_LIBRARY_COLLECTION,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+                    models.FieldCondition(key="track_id", match=models.MatchValue(value=track_id)),
+                ]
+            ),
+            limit=1,
+            with_vectors=False,
+        )
+
+        if not results[0]:
+            return False
+
+        entry_id = results[0][0].id
+        self.client.delete(
+            collection_name=self.USER_LIBRARY_COLLECTION,
+            points_selector=models.PointIdsList(points=[entry_id]),
+        )
+
+        return True
+
     def add_user_to_track(self, track_id: str, user_id: str) -> bool:
         """
-        Add a user to an existing track's user_ids array.
+        DEPRECATED: Add a user to an existing track's user_ids array.
+
+        Use add_track_to_user_library() instead.
 
         Used when a track already exists in the catalog and a new user
         wants to add it to their library.
@@ -244,17 +430,15 @@ class VectrolaDB:
         lyrics_vector: list[float],
         payload: dict,
         audio_vector: Optional[list[float]] = None,
-        user_id: Optional[str] = None,
     ) -> str:
         """
         Insert or update a track with its vectors.
 
         Args:
-            track_id: Canonical track ID (e.g., "spotify:xxx" or "hash:xxx")
+            track_id: 16-char track hash
             lyrics_vector: 384-dim lyrics embedding
             payload: Metadata (title, artist, moods, themes, etc.)
             audio_vector: Optional 512-dim CLAP embedding (Day 3)
-            user_id: Optional user ID to add to user_ids array
 
         Returns:
             The point ID
@@ -270,13 +454,6 @@ class VectrolaDB:
 
         # Ensure track_id is in payload
         payload["track_id"] = track_id
-
-        # Add user to user_ids array (Day 7)
-        if user_id:
-            user_ids = payload.get("user_ids", [])
-            if user_id not in user_ids:
-                user_ids.append(user_id)
-            payload["user_ids"] = user_ids
 
         self.client.upsert(
             collection_name=self.COLLECTION,
@@ -312,11 +489,18 @@ class VectrolaDB:
         """
         query_filter = None
         if user_id:
+            # NEW: Get user's track IDs from user_library collection
+            track_ids = self.get_user_track_ids(user_id, limit=10000)
+
+            if not track_ids:
+                return []  # User has no tracks
+
+            # Filter by track_id (not user_ids array anymore)
             query_filter = models.Filter(
                 must=[
                     models.FieldCondition(
-                        key="user_ids",
-                        match=models.MatchAny(any=[user_id]),
+                        key="track_id",
+                        match=models.MatchAny(any=track_ids[:1000]),  # Qdrant limit
                     )
                 ]
             )
@@ -351,11 +535,18 @@ class VectrolaDB:
         """
         query_filter = None
         if user_id:
+            # NEW: Get user's track IDs from user_library collection
+            track_ids = self.get_user_track_ids(user_id, limit=10000)
+
+            if not track_ids:
+                return []  # User has no tracks
+
+            # Filter by track_id
             query_filter = models.Filter(
                 must=[
                     models.FieldCondition(
-                        key="user_ids",
-                        match=models.MatchAny(any=[user_id]),
+                        key="track_id",
+                        match=models.MatchAny(any=track_ids[:1000]),  # Qdrant limit
                     )
                 ]
             )
@@ -392,11 +583,18 @@ class VectrolaDB:
         """
         query_filter = None
         if user_id:
+            # NEW: Get user's track IDs from user_library collection
+            track_ids = self.get_user_track_ids(user_id, limit=10000)
+
+            if not track_ids:
+                return []  # User has no tracks
+
+            # Filter by track_id
             query_filter = models.Filter(
                 must=[
                     models.FieldCondition(
-                        key="user_ids",
-                        match=models.MatchAny(any=[user_id]),
+                        key="track_id",
+                        match=models.MatchAny(any=track_ids[:1000]),  # Qdrant limit
                     )
                 ]
             )

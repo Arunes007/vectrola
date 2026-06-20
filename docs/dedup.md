@@ -166,6 +166,33 @@ vectrola ingest "/path/to/music"
 #    ✓ Done: melancholic, romantic
 ```
 
+### Force Re-Analysis
+
+Use the `--force` / `-F` flag to bypass deduplication and re-analyze existing tracks:
+
+```bash
+# Re-analyze all tracks (refreshes metadata, lyrics, moods, embeddings)
+vectrola ingest "/path/to/music" --force
+
+# Short form
+vectrola ingest "/path/to/music" -F
+```
+
+**When to use `--force`:**
+- Refresh metadata after LLM model upgrade
+- Re-fetch lyrics that were previously unavailable  
+- Fix tracks with incorrect moods/themes
+- Update embeddings after model changes
+
+**What `--force` does:**
+- ❌ Skips checksum match
+- ❌ Skips title+artist match
+- ✅ Full Spotify lookup
+- ✅ Re-fetch lyrics
+- ✅ Re-run LLM synthesis
+- ✅ Regenerate embeddings
+- ✅ Overwrite existing track in Qdrant
+
 ## Testing
 
 Run dedup-specific tests:

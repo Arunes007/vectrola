@@ -1,0 +1,121 @@
+welcome:
+  title: "🎧 Welcome to Vectrola"
+  subtitle: "Multimodal Music Knowledge Graph — semantic music search using audio embeddings and LLM synthesis"
+
+  getting_started:
+    header: "Getting Started:"
+    commands:
+      - cmd: "vectrola setup"
+        desc: "Initial setup wizard"
+      - cmd: "vectrola ingest ./music"
+        desc: "Ingest local music files"
+      - cmd: 'vectrola search "sad songs"'
+        desc: "Search by mood/theme"
+
+  sections:
+    core:
+      header: "Core Commands:"
+      commands:
+        - name: "ingest"
+          desc: "Ingest audio files into the knowledge graph"
+        - name: "search"
+          desc: "Search music by vibe/description"
+        - name: "similar"
+          desc: "Find tracks similar to a given track"
+        - name: "wiki"
+          desc: "Generate Obsidian wiki from indexed tracks"
+        - name: "analyze"
+          desc: "Analyze a single audio file"
+
+    account:
+      header: "Account & Setup:"
+      commands:
+        - name: "setup"
+          desc: "Interactive setup wizard"
+        - name: "status"
+          desc: "Show system status and components"
+        - name: "login"
+          desc: "Login to sync across devices"
+        - name: "logout"
+          desc: "Logout and switch to anonymous mode"
+        - name: "whoami"
+          desc: "Show current user status"
+
+    gdrive:
+      header: "Google Drive:"
+      commands:
+        - name: "gdrive auth"
+          desc: "Authenticate with Google Drive"
+        - name: "gdrive list"
+          desc: "Browse Drive folders"
+        - name: "gdrive ingest"
+          desc: "Ingest from Google Drive"
+
+    utilities:
+      header: "Utilities:"
+      commands:
+        - name: "retry"
+          desc: "Retry failed ingestions"
+        - name: "migrate-user"
+          desc: "Migrate tracks between users"
+
+  footer: "Run 'vectrola <command> --help' for command-specific help"
+
+setup:
+  title: "🎧 Vectrola Setup Wizard"
+
+  storage:
+    header: "Step 1/4: Storage Backend"
+    options:
+      - key: "1"
+        name: "Local"
+        desc: "fastest, single device"
+        hint: "Requires: docker run -d -p 6333:6333 qdrant/qdrant"
+      - key: "2"
+        name: "Vectrola Cloud"
+        desc: "Recommended"
+        hint: "Hosted by Vectrola, sync across devices"
+    default: "2"
+    connecting: "Connecting to Vectrola Cloud..."
+    connected: "Connected to Vectrola Cloud"
+    checking_local: "Checking local Qdrant..."
+    local_running: "Local Qdrant running"
+    local_not_running: "Local Qdrant not running"
+    local_hint: "Start with: docker run -d -p 6333:6333 qdrant/qdrant"
+    connection_failed: "Connection failed"
+
+  llm:
+    header: "Step 2/4: LLM Provider"
+    options:
+      - key: "1"
+        name: "Ollama"
+        desc: "free, local, private"
+      - key: "2"
+        name: "OpenAI"
+        desc: "cloud, paid"
+      - key: "3"
+        name: "Anthropic"
+        desc: "cloud, paid"
+      - key: "4"
+        name: "None"
+        desc: "skip mood/theme analysis"
+    default: "1"
+    ollama_running: "Ollama running"
+    ollama_not_running: "Ollama not running"
+    ollama_hint: "Start with: ollama serve"
+    no_models: "Ollama running but no models installed"
+    no_models_hint: "Install a model with: ollama pull llama3.2:1b"
+
+  gdrive:
+    header: "Step 3/4: Google Drive"
+    options:
+      - key: "1"
+        name: "Skip"
+        desc: "local files only"
+      - key: "2"
+        name: "Connect"
+        desc: "ingest from cloud"
+    default: "1"
+
+  user:
+    header: "Step 4/4: User Account"

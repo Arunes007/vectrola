@@ -1,0 +1,22 @@
+# Vectrola configuration defaults
+# These can be overridden via environment variables or ~/.config/vectrola/config.json
+
+storage:
+  local_url: "http://localhost:6333"
+  cloud_url: "https://qdrant-vectrola.up.railway.app"
+  collection: "vectrola_library"
+
+llm:
+  default_provider: "ollama"
+  default_model: "llama3.2:1b"
+  ollama_host: "http://localhost:11434"
+
+whisper:
+  model: "base"
+  device: "cpu"
+  compute_type: "int8"
+
+audio:
+  sample_rate: 48000
+  segment_duration: 10
+  segment_offset: 30

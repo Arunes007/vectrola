@@ -1809,13 +1809,21 @@ def refresh(
 
     if track:
         # Refresh specific track by name
+        # First get user's track IDs
+        user_track_ids = db.get_user_track_ids(user_id)
+
+        if not user_track_ids:
+            console.print(f"[red]No tracks found in your library.[/red]")
+            return
+
+        # Search for tracks matching the title
         points, _ = db.client.scroll(
             collection_name=db.COLLECTION,
             scroll_filter=models.Filter(
                 must=[
                     models.FieldCondition(
-                        key="user_ids",
-                        match=models.MatchAny(any=[user_id])
+                        key="track_id",
+                        match=models.MatchAny(any=user_track_ids[:1000])
                     ),
                     models.FieldCondition(
                         key="title",
@@ -1878,33 +1886,45 @@ def refresh(
 
     else:
         # Default: refresh all user's tracks
+        # Get user's track IDs from user_library collection
+        user_track_ids = db.get_user_track_ids(user_id)
+
+        if not user_track_ids:
+            console.print(f"[yellow]No tracks found in your library.[/yellow]")
+            return
+
         tracks_to_refresh = []
         offset = None
 
-        while True:
-            points, offset = db.client.scroll(
-                collection_name=db.COLLECTION,
-                scroll_filter=models.Filter(
-                    must=[
-                        models.FieldCondition(
-                            key="user_ids",
-                            match=models.MatchAny(any=[user_id])
-                        )
-                    ]
-                ),
-                limit=100,
-                offset=offset,
-                with_payload=True,
-            )
+        # Fetch tracks in batches (handle >1000 tracks)
+        for i in range(0, len(user_track_ids), 1000):
+            batch_ids = user_track_ids[i:i+1000]
 
-            for point in points:
-                # Try to find local file path
-                sources = point.payload.get("sources", {})
-                file_path = sources.get("local", {}).get(device_id)
-                tracks_to_refresh.append((point.id, point.payload, Path(file_path) if file_path else None))
+            batch_offset = None
+            while True:
+                points, batch_offset = db.client.scroll(
+                    collection_name=db.COLLECTION,
+                    scroll_filter=models.Filter(
+                        must=[
+                            models.FieldCondition(
+                                key="track_id",
+                                match=models.MatchAny(any=batch_ids)
+                            )
+                        ]
+                    ),
+                    limit=100,
+                    offset=batch_offset,
+                    with_payload=True,
+                )
 
-            if offset is None:
-                break
+                for point in points:
+                    # Try to find local file path
+                    sources = point.payload.get("sources", {})
+                    file_path = sources.get("local", {}).get(device_id)
+                    tracks_to_refresh.append((point.id, point.payload, Path(file_path) if file_path else None))
+
+                if batch_offset is None:
+                    break
 
     if not tracks_to_refresh:
         console.print("[yellow]No tracks found to refresh.[/yellow]")
@@ -2093,46 +2113,50 @@ def migrate_user(
     # Get database
     db = get_db()
 
-    # Find all tracks with from_user in user_ids
+    # Find all tracks in from_user's library
     try:
-        from qdrant_client import models
-
-        results, _ = db.client.scroll(
-            collection_name=db.COLLECTION,
-            scroll_filter=models.Filter(
-                must=[
-                    models.FieldCondition(
-                        key="user_ids",
-                        match=models.MatchAny(any=[from_user]),
-                    )
-                ]
-            ),
-            limit=1000,
-            with_payload=True,
-        )
+        from_library_entries = db.get_user_library_entries(from_user)
     except Exception as e:
-        console.print(f"[red]Error querying Qdrant: {e}[/red]")
+        console.print(f"[red]Error querying user library: {e}[/red]")
         raise typer.Exit(1)
 
-    if not results:
+    if not from_library_entries:
         console.print(f"[yellow]No tracks found for user '{from_user}'.[/yellow]")
         raise typer.Exit(0)
 
-    console.print(f"Found [bold]{len(results)}[/bold] tracks to migrate.")
+    console.print(f"Found [bold]{len(from_library_entries)}[/bold] tracks to migrate.")
 
     if dry_run:
         console.print("\n[dim]Dry run - no changes made. Remove --dry-run to apply.[/dim]")
         console.print("\nTracks that would be migrated:")
-        for point in results[:10]:
+
+        # Fetch track details for preview
+        track_ids = [entry.payload["track_id"] for entry in from_library_entries[:10]]
+        from qdrant_client import models
+
+        preview_points, _ = db.client.scroll(
+            collection_name=db.COLLECTION,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="track_id",
+                        match=models.MatchAny(any=track_ids)
+                    )
+                ]
+            ),
+            limit=10,
+        )
+
+        for point in preview_points:
             title = point.payload.get("title", "Unknown")
             artists = ", ".join(point.payload.get("artists", [])[:2])
             console.print(f"  • {title} - {artists}")
-        if len(results) > 10:
-            console.print(f"  ... and {len(results) - 10} more")
+        if len(from_library_entries) > 10:
+            console.print(f"  ... and {len(from_library_entries) - 10} more")
         raise typer.Exit(0)
 
     # Confirm migration
-    if not typer.confirm(f"\nMigrate {len(results)} tracks from '{from_user}' to '{to_user}'?"):
+    if not typer.confirm(f"\nMigrate {len(from_library_entries)} tracks from '{from_user}' to '{to_user}'?"):
         console.print("[yellow]Migration cancelled.[/yellow]")
         raise typer.Exit(0)
 
@@ -2145,27 +2169,33 @@ def migrate_user(
         TaskProgressColumn(),
         console=console,
     ) as progress:
-        task = progress.add_task("Migrating tracks...", total=len(results))
+        task = progress.add_task("Migrating tracks...", total=len(from_library_entries))
 
-        for point in results:
-            user_ids = point.payload.get("user_ids", [])
+        for entry in from_library_entries:
+            track_id = entry.payload["track_id"]
+            source = entry.payload.get("source", "local")
+            file_path = entry.payload.get("file_path")
+            gdrive_file_id = entry.payload.get("gdrive_file_id")
 
-            # Replace from_user with to_user
-            if from_user in user_ids:
-                user_ids.remove(from_user)
-            if to_user not in user_ids:
-                user_ids.append(to_user)
-
-            # Update in Qdrant
             try:
-                db.client.set_payload(
-                    collection_name=db.COLLECTION,
-                    payload={"user_ids": user_ids},
-                    points=[point.id],
+                # Add track to target user's library
+                db.add_track_to_user_library(
+                    user_id=to_user,
+                    track_id=track_id,
+                    source=source,
+                    file_path=file_path,
+                    gdrive_file_id=gdrive_file_id,
                 )
+
+                # Remove from source user's library
+                db.remove_track_from_user_library(
+                    user_id=from_user,
+                    track_id=track_id,
+                )
+
                 migrated += 1
             except Exception as e:
-                console.print(f"[red]Error updating track: {e}[/red]")
+                console.print(f"[red]Error migrating track {track_id}: {e}[/red]")
 
             progress.advance(task)
 

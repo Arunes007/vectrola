@@ -8,6 +8,8 @@ import uuid
 import json
 import platform
 
+import yaml
+
 
 def get_device_id() -> str:
     """
@@ -20,6 +22,7 @@ def get_device_id() -> str:
     """
     return platform.node()
 
+
 # Load environment variables from .env file if it exists
 try:
     from dotenv import load_dotenv
@@ -29,8 +32,19 @@ except ImportError:
     pass
 
 
-# Config file path
+# Config file paths
 CONFIG_PATH = Path.home() / ".config" / "vectrola" / "config.json"
+DEFAULTS_FILE = Path(__file__).parent / "defaults.yml"
+
+
+def _load_defaults() -> dict:
+    """Load defaults from YAML file."""
+    with open(DEFAULTS_FILE, "r") as f:
+        return yaml.safe_load(f)
+
+
+# Load defaults once at module import
+_DEFAULTS = _load_defaults()
 
 
 @dataclass
@@ -43,28 +57,33 @@ class VectrolaConfig:
 
     # Storage settings
     storage_mode: str = "local"  # "local" | "remote"
-    qdrant_url: str = "http://localhost:6333"
+    qdrant_url: str = field(default_factory=lambda: _DEFAULTS["storage"]["local_url"])
     qdrant_api_key: Optional[str] = None
-    qdrant_collection: str = "vectrola_library"
+    qdrant_collection: str = field(default_factory=lambda: _DEFAULTS["storage"]["collection"])
+
+    # Vectrola Cloud URL (from defaults.yml, override via VECTROLA_CLOUD_URL env var)
+    vectrola_cloud_url: str = field(
+        default_factory=lambda: os.getenv("VECTROLA_CLOUD_URL", _DEFAULTS["storage"]["cloud_url"])
+    )
 
     # LLM settings
-    llm_provider: str = "ollama"  # "ollama" | "openai" | "anthropic" | "none"
-    llm_model: str = "llama3.2:1b"
+    llm_provider: str = field(default_factory=lambda: _DEFAULTS["llm"]["default_provider"])
+    llm_model: str = field(default_factory=lambda: _DEFAULTS["llm"]["default_model"])
     llm_api_key: Optional[str] = None
 
     # Legacy Ollama settings (for backwards compatibility)
-    ollama_model: str = "qwen2.5:3b"
-    ollama_host: str = "http://localhost:11434"
+    ollama_model: str = field(default_factory=lambda: _DEFAULTS["llm"]["default_model"])
+    ollama_host: str = field(default_factory=lambda: _DEFAULTS["llm"]["ollama_host"])
 
     # Whisper settings
-    whisper_model: str = "base"
-    whisper_device: str = "cpu"
-    whisper_compute_type: str = "int8"
+    whisper_model: str = field(default_factory=lambda: _DEFAULTS["whisper"]["model"])
+    whisper_device: str = field(default_factory=lambda: _DEFAULTS["whisper"]["device"])
+    whisper_compute_type: str = field(default_factory=lambda: _DEFAULTS["whisper"]["compute_type"])
 
     # Audio processing
-    audio_sample_rate: int = 48000
-    audio_segment_duration: int = 10  # seconds
-    audio_segment_offset: int = 30  # seconds from start
+    audio_sample_rate: int = field(default_factory=lambda: _DEFAULTS["audio"]["sample_rate"])
+    audio_segment_duration: int = field(default_factory=lambda: _DEFAULTS["audio"]["segment_duration"])
+    audio_segment_offset: int = field(default_factory=lambda: _DEFAULTS["audio"]["segment_offset"])
 
     # Optional features
     use_demucs: bool = False  # Stem separation (slow)
