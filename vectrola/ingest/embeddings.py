@@ -239,9 +239,22 @@ class AudioEmbedder:
             512-dim CLAP embedding aligned with audio space
         """
         text_inputs = self.processor(text=[text], return_tensors="pt", padding=True)
-        text_embed = self.model.get_text_features(**text_inputs)
+        text_features = self.model.get_text_features(**text_inputs)
 
-        return text_embed[0].detach().numpy().tolist()
+        # Extract the actual tensor from the model output
+        # get_text_features returns a BaseModelOutputWithPooling object
+        if hasattr(text_features, 'pooler_output'):
+            embedding = text_features.pooler_output
+        else:
+            # Fallback: text_features might be the tensor directly
+            embedding = text_features
+
+        # Flatten to 1D if needed (handles batch dimension)
+        embedding_np = embedding.detach().numpy()
+        if embedding_np.ndim > 1:
+            embedding_np = embedding_np.flatten()
+
+        return embedding_np.tolist()
 
 
 # Singleton instances

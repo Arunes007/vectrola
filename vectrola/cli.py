@@ -2199,7 +2199,7 @@ def migrate_user(
 
             progress.advance(task)
 
-    console.print(f"\n[green]✅ Migrated {migrated}/{len(results)} tracks successfully![/green]")
+    console.print(f"\n[green]✅ Migrated {migrated}/{len(from_library_entries)} tracks successfully![/green]")
 
     # Optionally clean up anon_id file
     if from_user.startswith("anon_") and anon_path.exists():
