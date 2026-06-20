@@ -11,12 +11,47 @@ from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskPr
 from rich.table import Table
 from rich import print as rprint
 
+from vectrola.messages import load_messages
+
+console = Console()
+
+
+def show_welcome(ctx: typer.Context):
+    """Show welcome message when no command is provided."""
+    if ctx.invoked_subcommand is None:
+        msgs = load_messages()["welcome"]
+
+        console.print()
+        console.print(f"[bold cyan]{msgs['title']}[/bold cyan]")
+        console.print(f"[dim]{msgs['subtitle']}[/dim]")
+        console.print()
+
+        # Getting started
+        gs = msgs["getting_started"]
+        console.print(f"[bold]{gs['header']}[/bold]")
+        for cmd in gs["commands"]:
+            console.print(f"  {cmd['cmd']:25} [dim]# {cmd['desc']}[/dim]")
+        console.print()
+
+        # Sections
+        for section in msgs["sections"].values():
+            console.print(f"[bold]{section['header']}[/bold]")
+            for cmd in section["commands"]:
+                console.print(f"  {cmd['name']:12} [dim]{cmd['desc']}[/dim]")
+            console.print()
+
+        console.print(f"[dim]{msgs['footer']}[/dim]")
+        console.print()
+        raise typer.Exit(0)
+
+
 app = typer.Typer(
     name="vectrola",
     help="🎧 Vectrola: Multimodal Music Knowledge Graph\n\nSemantic music search using audio embeddings and LLM synthesis.",
     add_completion=False,
+    invoke_without_command=True,
+    callback=show_welcome,
 )
-console = Console()
 
 # Google Drive subcommand group
 gdrive_app = typer.Typer(
@@ -32,6 +67,7 @@ def ingest(
     recursive: bool = typer.Option(True, "--recursive/--no-recursive", "-r/-R", help="Scan subdirectories"),
     fast: bool = typer.Option(True, "--fast/--slow", "-f/-s", help="Skip Demucs stem separation (faster)"),
     write_tags: bool = typer.Option(True, "--tags/--no-tags", help="Write analysis to file tags"),
+    force: bool = typer.Option(False, "--force", "-F", help="Skip dedup check and re-analyze existing tracks"),
 ):
     """
     Ingest audio files into the knowledge graph.
@@ -60,6 +96,8 @@ def ingest(
 
     if fast:
         print("   Fast mode: skipping Demucs vocal separation")
+    if force:
+        print("   Force mode: re-analyzing all tracks (ignoring dedup)")
     print()
 
     pipeline = IngestPipeline(use_stems=not fast)
@@ -72,7 +110,7 @@ def ingest(
     for i, file in enumerate(files, 1):
         print(f"[{i}/{total}] {file.name}", flush=True)
         try:
-            result = pipeline.process_track(file, write_file_tags=write_tags)
+            result = pipeline.process_track(file, write_file_tags=write_tags, force=force)
             results.append(result)
             moods_str = ", ".join(result.moods[:3]) if result.moods else "no moods"
             print(f"   ✓ Done: {moods_str}")
@@ -97,10 +135,11 @@ def ingest(
 
     # Summary
     print()
-    print(f"✅ Processed: {len(results)} tracks")
+    print(f"✅ Processed: {len(results)}/{total} tracks")
     if errors:
-        print(f"❌ Errors: {len(errors)} tracks")
-        console.print("[yellow]Failed tracks saved. Run 'vectrola retry' to retry.[/yellow]")
+        print(f"❌ Failed: {len(errors)}/{total} tracks")
+        console.print("[yellow]To retry failed tracks, just run the same ingest command again.[/yellow]")
+        console.print("[dim]Successfully processed tracks will be skipped (dedup).[/dim]")
 
     # Next steps
     if results:
@@ -652,58 +691,59 @@ def setup(
 
 def _setup_storage(config):
     """Step 1: Configure storage backend."""
-    console.print("[bold]Step 1/4: Storage Backend[/bold]")
+    msgs = load_messages()["setup"]["storage"]
+
+    console.print(f"[bold]{msgs['header']}[/bold]")
     console.print("─" * 25)
     console.print()
-    console.print("  [1] Local (fastest, single device)")
-    console.print("      [dim]Requires: docker run -d -p 6333:6333 qdrant/qdrant[/dim]")
-    console.print()
-    console.print("  [2] Remote (sync across devices)")
-    console.print("      [dim]Supports: Railway, Qdrant Cloud, self-hosted[/dim]")
-    console.print()
 
-    current = "2" if config.storage_mode == "remote" else "1"
-    choice = typer.prompt("Choice", default=current)
+    for opt in msgs["options"]:
+        console.print(f"  [{opt['key']}] {opt['name']} ({opt['desc']})")
+        if opt.get("hint"):
+            console.print(f"      [dim]{opt['hint']}[/dim]")
+        console.print()
+
+    choice = typer.prompt("Choice", default=msgs["default"])
 
     if choice == "2":
         config.storage_mode = "remote"
-        default_url = config.qdrant_url if config.qdrant_url != "http://localhost:6333" else ""
-        config.qdrant_url = typer.prompt("Qdrant URL", default=default_url)
-        api_key = typer.prompt("API Key (optional, press Enter to skip)", default="")
-        config.qdrant_api_key = api_key if api_key else None
+        # Vectrola Cloud - use config default (can be overridden via VECTROLA_CLOUD_URL env var)
+        config.qdrant_url = config.vectrola_cloud_url
+        config.qdrant_api_key = None  # Public access
 
         # Test connection
         console.print()
-        with console.status("Testing connection..."):
+        with console.status(msgs["connecting"]):
             from vectrola.storage.qdrant import VectrolaDB
             try:
                 db = VectrolaDB(url=config.qdrant_url, api_key=config.qdrant_api_key)
                 if db.is_connected():
-                    console.print("[green]✓ Connected[/green]")
+                    console.print(f"[green]✓ {msgs['connected']}[/green]")
                 else:
-                    raise Exception("Connection failed")
+                    raise Exception(msgs["connection_failed"])
             except Exception as e:
-                console.print(f"[red]✗ Connection failed: {e}[/red]")
+                console.print(f"[red]✗ {msgs['connection_failed']}: {e}[/red]")
                 if not typer.confirm("Continue anyway?", default=False):
                     raise typer.Abort()
     else:
+        from vectrola.config import _DEFAULTS
         config.storage_mode = "local"
-        config.qdrant_url = "http://localhost:6333"
+        config.qdrant_url = _DEFAULTS["storage"]["local_url"]
         config.qdrant_api_key = None
 
         # Check if local Qdrant is running
         console.print()
-        with console.status("Checking local Qdrant..."):
+        with console.status(msgs["checking_local"]):
             from vectrola.storage.qdrant import VectrolaDB
             try:
                 db = VectrolaDB(url=config.qdrant_url)
                 if db.is_connected():
-                    console.print("[green]✓ Local Qdrant running[/green]")
+                    console.print(f"[green]✓ {msgs['local_running']}[/green]")
                 else:
                     raise Exception()
             except:
-                console.print("[yellow]⚠ Local Qdrant not running[/yellow]")
-                console.print("[dim]Start with: docker run -d -p 6333:6333 qdrant/qdrant[/dim]")
+                console.print(f"[yellow]⚠ {msgs['local_not_running']}[/yellow]")
+                console.print(f"[dim]{msgs['local_hint']}[/dim]")
 
     console.print()
     return config
@@ -1728,129 +1768,254 @@ def whoami():
 
 
 @app.command()
-def retry(
-    list_failed: bool = typer.Option(False, "--list", "-l", help="List failed tracks"),
-    clear: bool = typer.Option(False, "--clear", help="Clear all failed tracks"),
+def refresh(
+    path: Optional[Path] = typer.Argument(None, help="Refresh tracks from specific file or folder"),
+    track: Optional[str] = typer.Option(None, "--track", help="Refresh specific track by name"),
+    list_gaps: bool = typer.Option(False, "--list", "-l", help="List tracks with missing metadata"),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Show detailed progress for each track"),
 ):
     """
-    Retry failed ingestions.
+    Refresh metadata for existing tracks in Qdrant by filling missing fields.
 
-    Tracks that failed during previous ingestion are saved and can be retried.
-    Use --list to see failed tracks, --clear to remove them.
+    This command scans tracks already in your library and fills any missing
+    metadata (lyrics, moods, themes, album art, etc.) by re-running the
+    appropriate pipeline stages.
+
+    By default, only tracks with missing metadata are shown. Use --verbose
+    to see detailed progress for each track.
+
+    Examples:
+        vectrola refresh                          # Refresh all user's tracks
+        vectrola refresh --verbose                # Show detailed per-track progress
+        vectrola refresh --track "Song Name"      # Refresh one track
+        vectrola refresh /path/to/music           # Refresh tracks from folder
+        vectrola refresh --list                   # Show tracks with gaps
+
+    Note: For failed ingestions, just run 'vectrola ingest' again.
+          Deduplication will skip already-processed tracks.
     """
-    from vectrola.services.failed_ingests import FailedIngestsManager, detect_error_stage
+    from vectrola.storage.qdrant import get_db
+    from vectrola.services.metadata_gap_detector import detect_missing_fields
+    from vectrola.services.metadata_refresher import MetadataRefresher
+    from vectrola.config import get_or_create_user_id, get_device_id
+    from qdrant_client import models
 
-    fm = FailedIngestsManager()
+    db = get_db()
+    user_id = get_or_create_user_id()
+    device_id = get_device_id()
 
-    # List mode
-    if list_failed:
-        failed = fm.get_failed()
-        if not failed:
-            console.print("[green]No failed tracks.[/green]")
+    # Collect tracks to refresh
+    tracks_to_refresh = []
+
+    if track:
+        # Refresh specific track by name
+        points, _ = db.client.scroll(
+            collection_name=db.COLLECTION,
+            scroll_filter=models.Filter(
+                must=[
+                    models.FieldCondition(
+                        key="user_ids",
+                        match=models.MatchAny(any=[user_id])
+                    ),
+                    models.FieldCondition(
+                        key="title",
+                        match=models.MatchText(text=track)
+                    )
+                ]
+            ),
+            limit=10,
+        )
+
+        if not points:
+            console.print(f"[red]Track '{track}' not found in your library.[/red]")
             return
 
-        console.print(f"[bold]Failed tracks ({len(failed)}):[/bold]\n")
-        for i, f in enumerate(failed, 1):
-            console.print(f"  {i}. {f['name']} ({f['source']})")
-            console.print(f"     [red]Error:[/red] {f['error']}")
-            console.print(f"     [dim]Stage: {f['error_stage']} | Attempts: {f['attempts']} | {f['failed_at']}[/dim]")
-            console.print()
-        return
+        # If multiple matches, show list and pick first
+        if len(points) > 1:
+            console.print(f"[yellow]Found {len(points)} matches for '{track}', refreshing first:[/yellow]")
+            for p in points:
+                artists = ", ".join(p.payload.get("artists", []))
+                console.print(f"  • {p.payload.get('title')} - {artists}")
 
-    # Clear mode
-    if clear:
-        count = fm.clear()
-        console.print(f"[green]Cleared {count} failed track(s).[/green]")
-        return
+        point = points[0]
+        # Try to find local file path from sources
+        sources = point.payload.get("sources", {})
+        file_path = sources.get("local", {}).get(device_id)
+        tracks_to_refresh.append((point.id, point.payload, Path(file_path) if file_path else None))
 
-    # Retry mode
-    failed = fm.get_failed()
-    if not failed:
-        console.print("[green]No failed tracks to retry.[/green]")
-        return
+    elif path:
+        # Refresh tracks from specific file/folder
+        if not path.exists():
+            console.print(f"[red]Path not found: {path}[/red]")
+            return
 
-    console.print(f"[bold]🔄 Retrying {len(failed)} failed track(s)...[/bold]\n")
+        # Collect file paths
+        if path.is_file():
+            file_paths = [path]
+        else:
+            pattern = "**/*"
+            file_paths = []
+            for ext in [".mp3", ".flac", ".wav", ".m4a", ".ogg"]:
+                file_paths.extend(path.glob(f"{pattern}{ext}"))
+                file_paths.extend(path.glob(f"{pattern}{ext.upper()}"))
 
-    from vectrola.ingest.pipeline import IngestPipeline
-    pipeline = IngestPipeline()
-
-    recovered = 0
-    still_failing = []
-
-    for i, f in enumerate(failed, 1):
-        console.print(f"[{i}/{len(failed)}] {f['name']}")
-
-        try:
-            if f["source"] == "gdrive":
-                # Re-download from GDrive and process
-                from vectrola.gdrive import DriveClient
-                from dataclasses import dataclass
-
-                client = DriveClient()
-
-                with tempfile.TemporaryDirectory() as temp_dir:
-                    # Create DriveFile-like object for download
-                    @dataclass
-                    class DriveFileRetry:
-                        id: str
-                        name: str
-                        parent_path: str
-                        mime_type: str = "audio/mpeg"
-
-                    drive_file = DriveFileRetry(
-                        id=f["gdrive_file_id"],
-                        name=f["name"],
-                        parent_path=f["source_path"].rsplit("/", 1)[0] if "/" in f["source_path"] else "",
-                    )
-
-                    console.print("   ↓ Downloading from Drive...", end="")
-                    local_path = client.download_file(drive_file, Path(temp_dir))
-                    console.print(" done")
-
-                    result = pipeline.process_track(
-                        local_path,
-                        write_file_tags=False,
-                        gdrive_file_id=f["gdrive_file_id"],
-                        gdrive_path=f["source_path"],
-                    )
-
-                    moods_str = ", ".join(result.moods[:3]) if result.moods else "no moods"
-                    console.print(f"   [green]✓ Done: {moods_str}[/green]")
-
-            else:
-                # Local file - just re-process
-                local_path = Path(f["source_path"])
-                if not local_path.exists():
-                    raise FileNotFoundError(f"File not found: {local_path}")
-
-                result = pipeline.process_track(local_path, write_file_tags=True)
-                moods_str = ", ".join(result.moods[:3]) if result.moods else "no moods"
-                console.print(f"   [green]✓ Done: {moods_str}[/green]")
-
-            # Success - remove from failed list
-            fm.remove_failed(f["id"])
-            recovered += 1
-
-        except Exception as e:
-            console.print(f"   [red]✗ Error: {e}[/red]")
-            # Update the failed entry with new error and increment attempts
-            fm.add_failed(
-                name=f["name"],
-                source=f["source"],
-                source_path=f["source_path"],
-                error=str(e),
-                error_stage=detect_error_stage(str(e)),
-                gdrive_file_id=f.get("gdrive_file_id"),
+        # Query Qdrant for each file
+        for fp in file_paths:
+            points, _ = db.client.scroll(
+                collection_name=db.COLLECTION,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key=f"sources.local.{device_id}",
+                            match=models.MatchValue(value=str(fp))
+                        )
+                    ]
+                ),
+                limit=1,
             )
-            still_failing.append(f)
+            if points:
+                tracks_to_refresh.append((points[0].id, points[0].payload, fp))
+
+    else:
+        # Default: refresh all user's tracks
+        tracks_to_refresh = []
+        offset = None
+
+        while True:
+            points, offset = db.client.scroll(
+                collection_name=db.COLLECTION,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="user_ids",
+                            match=models.MatchAny(any=[user_id])
+                        )
+                    ]
+                ),
+                limit=100,
+                offset=offset,
+                with_payload=True,
+            )
+
+            for point in points:
+                # Try to find local file path
+                sources = point.payload.get("sources", {})
+                file_path = sources.get("local", {}).get(device_id)
+                tracks_to_refresh.append((point.id, point.payload, Path(file_path) if file_path else None))
+
+            if offset is None:
+                break
+
+    if not tracks_to_refresh:
+        console.print("[yellow]No tracks found to refresh.[/yellow]")
+        return
+
+    # List mode - just show tracks with gaps
+    if list_gaps:
+        console.print(f"[bold]Tracks with missing metadata:[/bold]\n")
+
+        gaps_found = 0
+        for point_id, payload, file_path in tracks_to_refresh:
+            missing = detect_missing_fields(payload)
+            if missing:
+                gaps_found += 1
+                title = payload.get("title", "Unknown")
+                artists = ", ".join(payload.get("artists", []))
+                console.print(f"• {title} - {artists}")
+                console.print(f"  Missing: {', '.join(missing)}")
+
+        if gaps_found == 0:
+            console.print("[green]All tracks have complete metadata![/green]")
+        else:
+            console.print(f"\n[yellow]{gaps_found} tracks need refreshing.[/yellow]")
+
+        return
+
+    # Pre-scan: identify tracks with gaps
+    tracks_with_gaps = []
+    for point_id, payload, file_path in tracks_to_refresh:
+        missing = detect_missing_fields(payload)
+        if missing:
+            tracks_with_gaps.append((point_id, payload, file_path, missing))
+
+    if not tracks_with_gaps:
+        console.print("[green]All tracks have complete metadata![/green]")
+        return
+
+    total_tracks = len(tracks_to_refresh)
+    tracks_needing_refresh = len(tracks_with_gaps)
+
+    console.print(f"🔄 Found {tracks_needing_refresh} tracks with missing metadata (out of {total_tracks} total)\n")
+
+    refresher = MetadataRefresher()
+    updated_count = 0
+    error_count = 0
+
+    if verbose:
+        # Verbose mode: show detailed per-track output
+        for i, (point_id, payload, file_path, missing) in enumerate(tracks_with_gaps, 1):
+            title = payload.get("title", "Unknown")
+            track_id = payload.get("track_id", "")
+
+            console.print(f"[{i}/{tracks_needing_refresh}] {title}")
+            console.print(f"   → Filling: {', '.join(missing)}")
+
+            try:
+                updates = refresher.refresh_track(track_id, missing, file_path)
+
+                if updates:
+                    db.client.set_payload(
+                        collection_name=db.COLLECTION,
+                        payload=updates,
+                        points=[point_id]
+                    )
+                    updated_count += 1
+                    console.print(f"   ✓ Updated: {len(updates)} fields")
+                else:
+                    console.print(f"   ⚠ No updates available")
+
+            except Exception as e:
+                error_count += 1
+                console.print(f"   ✗ Error: {e}")
+
+    else:
+        # Non-verbose mode: show progress bar (like --sync)
+        from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold blue]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total}"),
+            transient=False,
+            console=console,
+        ) as progress:
+            task = progress.add_task("Refreshing metadata", total=tracks_needing_refresh)
+
+            for point_id, payload, file_path, missing in tracks_with_gaps:
+                track_id = payload.get("track_id", "")
+
+                try:
+                    updates = refresher.refresh_track(track_id, missing, file_path)
+
+                    if updates:
+                        db.client.set_payload(
+                            collection_name=db.COLLECTION,
+                            payload=updates,
+                            points=[point_id]
+                        )
+                        updated_count += 1
+
+                except Exception as e:
+                    error_count += 1
+
+                progress.advance(task)
 
     # Summary
     console.print()
-    if recovered:
-        console.print(f"[green]✅ Recovered: {recovered} track(s)[/green]")
-    if still_failing:
-        console.print(f"[red]❌ Still failing: {len(still_failing)} track(s)[/red]")
-        console.print("[dim]Run 'vectrola retry --list' to see details.[/dim]")
+    console.print(f"✅ Updated: {updated_count}/{tracks_needing_refresh} tracks")
+    if error_count > 0:
+        console.print(f"❌ Errors: {error_count} tracks")
 
 
 @app.command("migrate-user")
