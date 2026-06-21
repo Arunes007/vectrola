@@ -742,6 +742,54 @@ class VectrolaDB:
         except Exception:
             return False
 
+    def get_all_tracks(self, limit: int = 10000) -> list[dict]:
+        """
+        Get all tracks from the database as plain dicts.
+
+        Args:
+            limit: Max tracks to return
+
+        Returns:
+            List of track metadata dicts
+        """
+        results = self.client.scroll(
+            collection_name=self.COLLECTION,
+            limit=limit,
+            with_vectors=False,
+            with_payload=True,
+        )
+
+        tracks = []
+        for record in results[0]:
+            payload = record.payload
+            payload["id"] = record.id
+            tracks.append(payload)
+
+        return tracks
+
+    def update_track_metadata(self, track_id: str, updates: dict) -> bool:
+        """
+        Update metadata for a track.
+
+        Args:
+            track_id: Track ID (spotify:xxx or hash:xxx)
+            updates: Dict of fields to update
+
+        Returns:
+            True if successful
+        """
+        point_id = self._generate_id(track_id)
+
+        try:
+            self.client.set_payload(
+                collection_name=self.COLLECTION,
+                payload=updates,
+                points=[point_id],
+            )
+            return True
+        except Exception:
+            return False
+
 
 # Singleton instance
 _db: Optional[VectrolaDB] = None
