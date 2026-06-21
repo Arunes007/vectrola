@@ -15,7 +15,7 @@ console = Console()
 
 # OAuth server URL
 OAUTH_SERVER_URL = "https://vectrola-oauth.up.railway.app"
-GOOGLE_CLIENT_ID = "930348527494-1o3f63jji8p9ffuslm5r5j5vtlbopfcm.apps.googleusercontent.com"
+GOOGLE_CLIENT_ID = "212647824656-9h9gchm0msibletsog338miabe9qtbe1.apps.googleusercontent.com"
 
 
 def generate_pkce() -> Tuple[str, str]:
