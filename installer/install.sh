@@ -630,6 +630,49 @@ install_ollama() {
     fi
 }
 
+ensure_ollama_model() {
+    # Skip if not using local Ollama
+    if [[ "$LLM_TYPE" != "local" ]]; then
+        return
+    fi
+
+    # Skip if Ollama is not available
+    if [[ "$OLLAMA_AVAILABLE" != "true" ]]; then
+        return
+    fi
+
+    step "Checking Ollama model..."
+
+    # Read default model from defaults.yml
+    local default_model="llama3.2:1b"  # Fallback
+    if [[ -f "$VECTROLA_INSTALL_DIR/vectrola/defaults.yml" ]]; then
+        default_model=$(grep "default_model:" "$VECTROLA_INSTALL_DIR/vectrola/defaults.yml" | awk '{print $2}' | tr -d '"')
+    fi
+
+    # Check if Ollama is running
+    if ! curl -s --connect-timeout 2 "$DEFAULT_OLLAMA_HOST/api/tags" >/dev/null 2>&1; then
+        warn "Ollama is not running"
+        info "Start it with: ${CYAN}ollama serve${RESET}"
+        info "Then pull model: ${CYAN}ollama pull $default_model${RESET}"
+        return
+    fi
+
+    # Check if model is already downloaded
+    if ollama list 2>/dev/null | grep -q "^${default_model%%:*}"; then
+        success "Model '$default_model' already available"
+        return
+    fi
+
+    # Pull the model
+    info "Downloading LLM model ($default_model)..."
+    echo "   ${DIM}This may take a few minutes on first run...${RESET}"
+    if ollama pull "$default_model"; then
+        success "LLM model ready"
+    else
+        warn "Failed to download model - you can run 'ollama pull $default_model' later"
+    fi
+}
+
 verify_installation() {
     step "Verifying installation..."
 
@@ -876,6 +919,7 @@ main() {
     write_config
     configure_shell
     install_ollama
+    ensure_ollama_model  # Check/pull model even if Ollama was already installed
     setup_local_qdrant
     verify_installation
 

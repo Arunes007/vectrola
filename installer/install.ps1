@@ -626,6 +626,62 @@ function Test-Installation {
     }
 }
 
+function Ensure-OllamaModel {
+    # Skip if not using local Ollama
+    if ($script:LlmType -ne 'local') {
+        return
+    }
+
+    # Skip if Ollama is not available
+    if (-not $script:OllamaAvailable) {
+        return
+    }
+
+    Write-Step "Checking Ollama model..."
+
+    # Read default model from defaults.yml
+    $defaultModel = "llama3.2:1b"  # Fallback
+    $defaultsFile = "$VectrolaInstallDir\vectrola\defaults.yml"
+    if (Test-Path $defaultsFile) {
+        $content = Get-Content $defaultsFile
+        $modelLine = $content | Select-String "default_model:" | Select-Object -First 1
+        if ($modelLine) {
+            $defaultModel = ($modelLine.ToString() -split ':')[1].Trim().Trim('"')
+        }
+    }
+
+    # Check if Ollama is running
+    try {
+        $null = Invoke-RestMethod -Uri "$script:OllamaHost/api/tags" -TimeoutSec 2 -ErrorAction Stop
+    } catch {
+        Write-Warn "Ollama is not running"
+        Write-Info "Start it with: ollama serve"
+        Write-Info "Then pull model: ollama pull $defaultModel"
+        return
+    }
+
+    # Check if model is already downloaded
+    try {
+        $models = & ollama list 2>$null
+        if ($models -match [regex]::Escape($defaultModel.Split(':')[0])) {
+            Write-Success "Model '$defaultModel' already available"
+            return
+        }
+    } catch {
+        # ollama list failed, try pulling anyway
+    }
+
+    # Pull the model
+    Write-Info "Downloading LLM model ($defaultModel)..."
+    Write-Host "   This may take a few minutes on first run..." -ForegroundColor DarkGray
+    try {
+        & ollama pull $defaultModel
+        Write-Success "LLM model ready"
+    } catch {
+        Write-Warn "Failed to download model - you can run 'ollama pull $defaultModel' later"
+    }
+}
+
 function Write-NextSteps {
     Write-Host ""
     Write-Separator
@@ -749,6 +805,7 @@ Install-Dependencies
 Write-Config
 Set-Path
 Install-OllamaWindows
+Ensure-OllamaModel
 Install-LocalQdrant
 Test-Installation
 
