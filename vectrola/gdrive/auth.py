@@ -115,7 +115,6 @@ def authenticate(force: bool = False) -> Optional["Credentials"]:
     success = oauth_authenticate(TOKEN_PATH, force)
 
     if not success:
-        console.print("[red]Authentication failed[/red]")
         return None
 
     # Load the newly saved credentials

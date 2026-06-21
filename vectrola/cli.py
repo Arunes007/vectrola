@@ -1491,10 +1491,13 @@ def gdrive_auth(
         try:
             creds = authenticate(force=force)
             if not creds:
-                console.print("[red]Authentication failed[/red]")
+                console.print("[red]Authentication failed or cancelled[/red]")
                 raise typer.Exit(1)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Authentication cancelled by user[/yellow]")
+            raise typer.Exit(0)
         except Exception as e:
-            console.print(f"[red]Authentication failed: {e}[/red]")
+            console.print(f"[red]Authentication error: {e}[/red]")
             raise typer.Exit(1)
 
     # Create Vectrola folders
