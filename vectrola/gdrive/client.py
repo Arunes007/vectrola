@@ -440,6 +440,21 @@ class DriveClient:
 
         return current_id
 
+    def ensure_vectrola_folders(self) -> tuple[str, str]:
+        """Ensure /Vectrola/audio and /Vectrola/wiki folders exist.
+
+        Returns:
+            Tuple of (audio_folder_id, wiki_folder_id)
+        """
+        # Create /Vectrola if not exists
+        vectrola_id = self.find_or_create_folder("/Vectrola")
+
+        # Create subfolders
+        audio_id = self.find_or_create_folder("/Vectrola/audio")
+        wiki_id = self.find_or_create_folder("/Vectrola/wiki")
+
+        return audio_id, wiki_id
+
     def upload_file(
         self,
         local_path: Path,

@@ -96,6 +96,10 @@ class VectrolaConfig:
     gdrive_cache_dir: Path = field(
         default_factory=lambda: Path("./.vectrola_cache/gdrive")
     )
+    oauth_server_url: str = "https://vectrola-oauth.up.railway.app"
+    gdrive_root_folder: str = "/Vectrola"
+    gdrive_audio_folder_id: Optional[str] = None
+    gdrive_wiki_folder_id: Optional[str] = None
 
     # User settings
     user_mode: str = "anonymous"  # "anonymous" | "login"
@@ -135,6 +139,8 @@ def load_config() -> VectrolaConfig:
             # GDrive settings
             if "gdrive" in data:
                 config.gdrive_enabled = data["gdrive"].get("enabled", False)
+                config.gdrive_audio_folder_id = data["gdrive"].get("audio_folder_id")
+                config.gdrive_wiki_folder_id = data["gdrive"].get("wiki_folder_id")
 
             # User settings
             if "user" in data:

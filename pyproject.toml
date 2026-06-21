@@ -63,6 +63,7 @@ gdrive = [
     "google-api-python-client>=2.100",
     "google-auth-oauthlib>=1.1",
     "google-auth-httplib2>=0.1",
+    "requests>=2.31",  # For OAuth server communication
 ]
 full = [
     "vectrola[audio,mcp,gdrive]",

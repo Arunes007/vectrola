@@ -1154,16 +1154,18 @@ def _browse_and_select_folders():
 @gdrive_app.command("auth")
 def gdrive_auth(
     logout: bool = typer.Option(False, "--logout", help="Remove stored credentials"),
-    skip_select: bool = typer.Option(False, "--skip-select", help="Skip folder selection after auth"),
+    force: bool = typer.Option(False, "--force", help="Force re-authentication"),
 ):
     """
-    Authenticate with Google Drive and select folders.
+    Authenticate with Google Drive and create Vectrola folder.
 
-    Opens your browser for Google sign-in. After authorization,
-    prompts you to select which folders Vectrola can access.
+    Opens your browser for Google sign-in via vectrola-oauth.up.railway.app.
+    After authorization, creates /Vectrola/audio and /Vectrola/wiki folders.
     """
     try:
         from vectrola.gdrive import authenticate, logout as do_logout, is_authenticated
+        from vectrola.gdrive.client import DriveClient
+        from vectrola.config import load_config, CONFIG_PATH
     except ImportError:
         console.print("[red]Google Drive support not installed.[/red]")
         console.print("[dim]Install with: pip install vectrola[gdrive][/dim]")
@@ -1178,81 +1180,59 @@ def gdrive_auth(
 
     already_authed = is_authenticated()
 
-    if already_authed:
+    if already_authed and not force:
         console.print("[green]✓ Already authenticated with Google Drive[/green]")
     else:
         try:
-            authenticate()
+            creds = authenticate(force=force)
+            if not creds:
+                console.print("[red]Authentication failed[/red]")
+                raise typer.Exit(1)
         except Exception as e:
             console.print(f"[red]Authentication failed: {e}[/red]")
             raise typer.Exit(1)
 
-    # After successful auth, prompt for folder selection
-    if not skip_select:
-        console.print()
-        console.print("[bold]Select folders to allow Vectrola access:[/bold]")
-        console.print()
+    # Create Vectrola folders
+    console.print()
+    console.print("[bold cyan]Setting up Vectrola folders in Google Drive...[/bold cyan]")
 
-        # Try browser-based Google Picker first, fall back to CLI browser
-        import os
-        picker_client_id = os.getenv("GOOGLE_PICKER_CLIENT_ID", "")
-        api_key = os.getenv("GOOGLE_API_KEY", "")
-
-        if picker_client_id and api_key:
-            # Use browser-based Google Picker UI
-            try:
-                from vectrola.gdrive.picker import open_folder_picker
-                from vectrola.gdrive import add_allowed_folder, clear_allowed_folders
-
-                folders, access_token = open_folder_picker(picker_client_id, api_key)
-
-                if folders:
-                    clear_allowed_folders()
-                    for folder in folders:
-                        add_allowed_folder(folder['id'], folder['name'])
-
-                    console.print(f"\n[green]✓ Access granted to {len(folders)} folder(s):[/green]")
-                    for folder in folders:
-                        console.print(f"  📁 {folder['name']}")
-                    console.print()
-                    console.print("[dim]Now run: vectrola gdrive ingest <folder>[/dim]")
-                else:
-                    console.print("[yellow]No folders selected.[/yellow]")
-            except Exception as e:
-                console.print(f"[yellow]Browser picker failed: {e}[/yellow]")
-                console.print("[dim]Falling back to CLI folder browser...[/dim]")
-                console.print()
-                _browse_and_select_folders()
-        else:
-            # Fall back to CLI-based folder browser
-            console.print("[dim]Tip: Set GOOGLE_PICKER_CLIENT_ID and GOOGLE_API_KEY in .env for browser-based folder picker[/dim]")
-            console.print()
-            _browse_and_select_folders()
-
-
-@gdrive_app.command("setup")
-def gdrive_setup(
-    client_id: str = typer.Option(..., "--client-id", help="Your Google OAuth Client ID"),
-    client_secret: str = typer.Option(..., "--client-secret", help="Your Google OAuth Client Secret"),
-):
-    """
-    Configure custom Google OAuth credentials (BYOC).
-
-    Power users can provide their own Google Cloud project credentials
-    to avoid the unverified app warning and 100-user limit.
-
-    See docs/gdrive.md for instructions on creating credentials.
-    """
     try:
-        from vectrola.gdrive import setup_custom_credentials
-    except ImportError:
-        console.print("[red]Google Drive support not installed.[/red]")
-        console.print("[dim]Install with: pip install vectrola[gdrive][/dim]")
-        raise typer.Exit(1)
+        client = DriveClient()
+        audio_id, wiki_id = client.ensure_vectrola_folders()
 
-    setup_custom_credentials(client_id, client_secret)
-    console.print("[green]✓ Custom credentials saved[/green]")
-    console.print("[dim]Run 'vectrola gdrive auth' to authenticate[/dim]")
+        # Save folder IDs to config
+        config = load_config()
+        config.gdrive_enabled = True
+        config.gdrive_audio_folder_id = audio_id
+        config.gdrive_wiki_folder_id = wiki_id
+
+        # Save to config.json
+        import json
+        CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+        if CONFIG_PATH.exists():
+            config_data = json.loads(CONFIG_PATH.read_text())
+        else:
+            config_data = {}
+
+        if "gdrive" not in config_data:
+            config_data["gdrive"] = {}
+
+        config_data["gdrive"]["enabled"] = True
+        config_data["gdrive"]["audio_folder_id"] = audio_id
+        config_data["gdrive"]["wiki_folder_id"] = wiki_id
+
+        CONFIG_PATH.write_text(json.dumps(config_data, indent=2))
+
+        console.print("[green]✅ Vectrola folders created:[/green]")
+        console.print(f"  📁 /Vectrola/audio (ID: {audio_id})")
+        console.print(f"  📁 /Vectrola/wiki (ID: {wiki_id})")
+        console.print()
+        console.print("[dim]Now run: vectrola ingest <path> && vectrola wiki --sync[/dim]")
+
+    except Exception as e:
+        console.print(f"[red]Failed to create folders: {e}[/red]")
+        raise typer.Exit(1)
 
 
 @gdrive_app.command("list")
@@ -1517,177 +1497,6 @@ def gdrive_status():
         raise typer.Exit(1)
 
 
-@gdrive_app.command("select")
-def gdrive_select():
-    """
-    Open Google Picker to select which folders Vectrola can access.
-
-    Opens a browser window with Google's folder picker. Select one or more
-    folders containing your music. Vectrola will ONLY be able to access
-    the folders you choose - this is enforced by Google, not just the app.
-    """
-    import os
-    try:
-        from vectrola.gdrive.picker import open_folder_picker
-        from vectrola.gdrive import add_allowed_folder, clear_allowed_folders
-    except ImportError as e:
-        console.print(f"[red]Google Drive support not installed: {e}[/red]")
-        console.print("[dim]Install with: pip install vectrola[gdrive][/dim]")
-        raise typer.Exit(1)
-
-    # Use Web App client ID for Picker (different from Desktop app for CLI auth)
-    client_id = os.getenv("GOOGLE_PICKER_CLIENT_ID", "")
-    api_key = os.getenv("GOOGLE_API_KEY", "")
-
-    if not client_id:
-        console.print("[red]GOOGLE_PICKER_CLIENT_ID not set in .env[/red]")
-        console.print("[dim]Create a Web Application OAuth credential at:[/dim]")
-        console.print("[dim]https://console.cloud.google.com/apis/credentials[/dim]")
-        raise typer.Exit(1)
-
-    if not api_key:
-        console.print("[red]GOOGLE_API_KEY not set in .env[/red]")
-        console.print("[dim]Create an API key at: https://console.cloud.google.com/apis/credentials[/dim]")
-        raise typer.Exit(1)
-
-    try:
-        folders, access_token = open_folder_picker(client_id, api_key)
-
-        if not folders:
-            console.print("[yellow]No folders selected.[/yellow]")
-            return
-
-        # Clear existing and add new
-        clear_allowed_folders()
-        for folder in folders:
-            add_allowed_folder(folder['id'], folder['name'])
-
-        console.print(f"\n[green]✓ Access granted to {len(folders)} folder(s):[/green]")
-        for folder in folders:
-            console.print(f"  📁 {folder['name']}")
-
-        console.print("\n[dim]Vectrola can only access these folders and their contents.[/dim]")
-
-    except RuntimeError as e:
-        console.print(f"[red]Folder selection failed: {e}[/red]")
-        raise typer.Exit(1)
-    except Exception as e:
-        console.print(f"[red]Error: {e}[/red]")
-        raise typer.Exit(1)
-
-
-@gdrive_app.command("allow")
-def gdrive_allow(
-    path: str = typer.Argument(..., help="Drive folder path to allow (e.g., /songs)"),
-):
-    """
-    Allow access to a specific Google Drive folder.
-
-    By default, Vectrola can access your entire Drive. Use this command
-    to restrict access to only specific folders.
-
-    Examples:
-        vectrola gdrive allow /songs
-        vectrola gdrive allow "/Music/Bollywood"
-    """
-    try:
-        from vectrola.gdrive import is_authenticated, DriveClient, add_allowed_folder
-    except ImportError:
-        console.print("[red]Google Drive support not installed.[/red]")
-        raise typer.Exit(1)
-
-    if not is_authenticated():
-        console.print("[red]Not authenticated. Run 'vectrola gdrive auth' first.[/red]")
-        raise typer.Exit(1)
-
-    client = DriveClient()
-
-    # Resolve path to folder ID
-    folder_id = client.resolve_path(path)
-    if folder_id is None:
-        console.print(f"[red]Folder not found: {path}[/red]")
-        raise typer.Exit(1)
-
-    # Add to allowed list
-    add_allowed_folder(folder_id, path)
-    console.print(f"[green]✓ Allowed access to: {path}[/green]")
-    console.print("[dim]Vectrola will only access this folder and its subfolders.[/dim]")
-
-
-@gdrive_app.command("allowed")
-def gdrive_allowed():
-    """
-    Show folders that Vectrola is allowed to access.
-    """
-    try:
-        from vectrola.gdrive import get_allowed_folders
-    except ImportError:
-        console.print("[red]Google Drive support not installed.[/red]")
-        raise typer.Exit(1)
-
-    folders = get_allowed_folders()
-
-    if not folders:
-        console.print("[yellow]No folder restrictions set.[/yellow]")
-        console.print("[dim]Vectrola can access your entire Google Drive.[/dim]")
-        console.print("[dim]Use 'vectrola gdrive allow <path>' to restrict access.[/dim]")
-        return
-
-    console.print("[bold]Allowed folders:[/bold]")
-    for folder_id, folder_path in folders.items():
-        console.print(f"  📁 {folder_path}")
-
-    console.print(f"\n[dim]{len(folders)} folder(s) allowed[/dim]")
-
-
-@gdrive_app.command("disallow")
-def gdrive_disallow(
-    path: str = typer.Argument(None, help="Folder path to remove (or --all to clear all)"),
-    all_folders: bool = typer.Option(False, "--all", help="Remove all folder restrictions"),
-):
-    """
-    Remove a folder from the allowed list.
-
-    Examples:
-        vectrola gdrive disallow /songs      # Remove specific folder
-        vectrola gdrive disallow --all       # Clear all restrictions
-    """
-    try:
-        from vectrola.gdrive import (
-            is_authenticated, DriveClient, get_allowed_folders,
-            remove_allowed_folder, clear_allowed_folders
-        )
-    except ImportError:
-        console.print("[red]Google Drive support not installed.[/red]")
-        raise typer.Exit(1)
-
-    if all_folders:
-        count = clear_allowed_folders()
-        console.print(f"[green]✓ Removed all folder restrictions ({count} folders)[/green]")
-        console.print("[dim]Vectrola can now access your entire Google Drive.[/dim]")
-        return
-
-    if not path:
-        console.print("[red]Specify a folder path or use --all to clear all restrictions.[/red]")
-        raise typer.Exit(1)
-
-    # Find folder ID by path
-    folders = get_allowed_folders()
-    normalized_path = "/" + path.strip("/")
-
-    folder_id = None
-    for fid, fpath in folders.items():
-        if "/" + fpath.strip("/") == normalized_path:
-            folder_id = fid
-            break
-
-    if folder_id is None:
-        console.print(f"[red]Folder not in allowed list: {path}[/red]")
-        console.print("[dim]Use 'vectrola gdrive allowed' to see allowed folders.[/dim]")
-        raise typer.Exit(1)
-
-    remove_allowed_folder(folder_id)
-    console.print(f"[green]✓ Removed: {path}[/green]")
 
 
 @gdrive_app.command("revoke")
