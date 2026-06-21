@@ -649,12 +649,31 @@ ensure_ollama_model() {
         default_model=$(grep "default_model:" "$VECTROLA_INSTALL_DIR/vectrola/defaults.yml" | awk '{print $2}' | tr -d '"')
     fi
 
-    # Check if Ollama is running
+    # Check if Ollama is running, start it if not
     if ! curl -s --connect-timeout 2 "$DEFAULT_OLLAMA_HOST/api/tags" >/dev/null 2>&1; then
-        warn "Ollama is not running"
-        info "Start it with: ${CYAN}ollama serve${RESET}"
-        info "Then pull model: ${CYAN}ollama pull $default_model${RESET}"
-        return
+        info "Starting Ollama service..."
+        if [[ "$PLATFORM" == "macos" ]]; then
+            # On macOS, try brew services or launch in background
+            if command -v brew >/dev/null 2>&1; then
+                brew services start ollama 2>/dev/null || ollama serve > /dev/null 2>&1 &
+            else
+                ollama serve > /dev/null 2>&1 &
+            fi
+        else
+            # On Linux, start as background process
+            ollama serve > /dev/null 2>&1 &
+        fi
+
+        # Wait for Ollama to start
+        sleep 2
+
+        # Check again if it's running
+        if ! curl -s --connect-timeout 2 "$DEFAULT_OLLAMA_HOST/api/tags" >/dev/null 2>&1; then
+            warn "Failed to start Ollama automatically"
+            info "Start it manually with: ${CYAN}ollama serve${RESET}"
+            info "Then pull model: ${CYAN}ollama pull $default_model${RESET}"
+            return
+        fi
     fi
 
     # Check if model is already downloaded

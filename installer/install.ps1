@@ -650,14 +650,32 @@ function Ensure-OllamaModel {
         }
     }
 
-    # Check if Ollama is running
+    # Check if Ollama is running, start it if not
     try {
         $null = Invoke-RestMethod -Uri "$script:OllamaHost/api/tags" -TimeoutSec 2 -ErrorAction Stop
     } catch {
-        Write-Warn "Ollama is not running"
-        Write-Info "Start it with: ollama serve"
-        Write-Info "Then pull model: ollama pull $defaultModel"
-        return
+        Write-Info "Starting Ollama service..."
+
+        # Start Ollama in background
+        try {
+            Start-Process -FilePath "ollama" -ArgumentList "serve" -WindowStyle Hidden -ErrorAction Stop
+            Start-Sleep -Seconds 2
+
+            # Check again if it's running
+            try {
+                $null = Invoke-RestMethod -Uri "$script:OllamaHost/api/tags" -TimeoutSec 2 -ErrorAction Stop
+            } catch {
+                Write-Warn "Failed to start Ollama automatically"
+                Write-Info "Start it manually with: ollama serve"
+                Write-Info "Then pull model: ollama pull $defaultModel"
+                return
+            }
+        } catch {
+            Write-Warn "Failed to start Ollama automatically"
+            Write-Info "Start it manually with: ollama serve"
+            Write-Info "Then pull model: ollama pull $defaultModel"
+            return
+        }
     }
 
     # Check if model is already downloaded
