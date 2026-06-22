@@ -363,6 +363,73 @@ class DriveClient:
         about = self.service.about().get(fields="user").execute()
         return about.get("user", {})
 
+    def file_exists(self, file_id: str) -> bool:
+        """Check if a file still exists on Google Drive.
+
+        Args:
+            file_id: Google Drive file ID
+
+        Returns:
+            True if file exists and is accessible, False otherwise
+        """
+        try:
+            self.service.files().get(
+                fileId=file_id,
+                fields='id'
+            ).execute()
+            return True
+        except Exception:
+            # File deleted, trashed, or not accessible
+            return False
+
+    def list_audio_files_map(self, folder_id: str) -> dict:
+        """List all audio files in a folder and return as a map.
+
+        Args:
+            folder_id: Google Drive folder ID (e.g., audio_folder_id)
+
+        Returns:
+            Dict mapping relative path (e.g., "Artist/Title.mp3") to file_id
+        """
+        files_map = {}
+
+        def _scan_folder(fid: str, parent_path: str):
+            query = f"'{fid}' in parents and trashed = false"
+            page_token = None
+
+            while True:
+                response = (
+                    self.service.files()
+                    .list(
+                        q=query,
+                        spaces="drive",
+                        fields="nextPageToken, files(id, name, mimeType)",
+                        pageToken=page_token,
+                        pageSize=100,
+                    )
+                    .execute()
+                )
+
+                for item in response.get("files", []):
+                    mime_type = item.get("mimeType", "")
+                    name = item["name"]
+
+                    if mime_type == "application/vnd.google-apps.folder":
+                        # Recurse into subfolder
+                        subfolder_path = f"{parent_path}/{name}" if parent_path else name
+                        _scan_folder(item["id"], subfolder_path)
+                    elif mime_type in self.AUDIO_MIMETYPES:
+                        # Audio file - add to map
+                        rel_path = f"{parent_path}/{name}" if parent_path else name
+                        files_map[rel_path] = item["id"]
+
+                page_token = response.get("nextPageToken")
+                if not page_token:
+                    break
+
+        _scan_folder(folder_id, "")
+        return files_map
+
     # =========================================================================
     # Write Operations (require drive.file scope)
     # =========================================================================

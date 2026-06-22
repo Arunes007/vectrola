@@ -17,6 +17,7 @@ env/
 .vscode/
 *.swp
 *.swo
+*.ipynb
 
 # Environment variables
 .env
@@ -47,3 +48,4 @@ htmlcov/
 .DS_Store
 Thumbs.db
 obsidian-vectrola-sync/node_modules/
+scripts/debug_qdrant.py

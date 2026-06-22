@@ -113,10 +113,6 @@ class WikiGenerator:
         owner_file = self.output_dir / ".wiki_owner"
         owner_file.write_text(user_id)
 
-        print()
-        print(f"✅ Wiki generated at: {self.output_dir}")
-        print(f"   Open in Obsidian to explore!")
-
     def _create_directories(self):
         """Create wiki directory structure."""
         for dir_path in [

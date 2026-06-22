@@ -752,8 +752,9 @@ class VectrolaDB:
         Returns:
             List of track metadata dicts
         """
+        # Query user_library which has sources field with file paths
         results = self.client.scroll(
-            collection_name=self.COLLECTION,
+            collection_name=self.USER_LIBRARY_COLLECTION,
             limit=limit,
             with_vectors=False,
             with_payload=True,
@@ -788,6 +789,77 @@ class VectrolaDB:
             )
             return True
         except Exception:
+            return False
+
+    def update_user_library_source(
+        self,
+        track_id: str,
+        user_id: str,
+        source_type: str,
+        provider: str,
+        file_id: str,
+        path: str,
+    ) -> bool:
+        """
+        Update user_library entry with a new source (local or cloud).
+
+        Args:
+            track_id: Track ID (spotify:xxx or hash:xxx)
+            user_id: User ID
+            source_type: "local" or "cloud"
+            provider: For cloud: "gdrive". For local: hostname
+            file_id: For cloud: GDrive file ID. For local: file path
+            path: Relative path in Drive (e.g., "Artist/Track.mp3")
+
+        Returns:
+            True if successful
+        """
+        try:
+            # Find user_library entry for this track+user
+            results = self.client.scroll(
+                collection_name=self.USER_LIBRARY_COLLECTION,
+                scroll_filter=models.Filter(
+                    must=[
+                        models.FieldCondition(
+                            key="track_id",
+                            match=models.MatchValue(value=track_id),
+                        ),
+                        models.FieldCondition(
+                            key="user_id",
+                            match=models.MatchValue(value=user_id),
+                        ),
+                    ]
+                ),
+                limit=1,
+                with_payload=True,
+            )
+
+            points = results[0]
+            if not points:
+                return False
+
+            entry = points[0]
+            sources = entry.payload.get("sources", {"local": {}, "cloud": {}})
+
+            if source_type == "cloud":
+                if "cloud" not in sources:
+                    sources["cloud"] = {}
+                sources["cloud"][provider] = {"file_id": file_id, "path": path}
+            elif source_type == "local":
+                if "local" not in sources:
+                    sources["local"] = {}
+                sources["local"][provider] = {"file_path": file_id, "path": path}
+
+            # Update the entry
+            self.client.set_payload(
+                collection_name=self.USER_LIBRARY_COLLECTION,
+                payload={"sources": sources},
+                points=[entry.id],
+            )
+            return True
+
+        except Exception as e:
+            print(f"Failed to update user_library source: {e}")
             return False
 
 

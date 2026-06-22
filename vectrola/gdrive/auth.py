@@ -28,7 +28,7 @@ TOKEN_PATH = TOKEN_DIR / "gdrive_token.json"
 
 
 def is_authenticated() -> bool:
-    """Check if valid credentials exist."""
+    """Check if valid credentials exist, attempting refresh if needed."""
     if not TOKEN_PATH.exists():
         return False
 
@@ -36,8 +36,29 @@ def is_authenticated() -> bool:
         token_data = json.loads(TOKEN_PATH.read_text())
         token_expiry = token_data.get("token_expiry", 0)
 
-        # Check if token is still valid (with 5-minute buffer)
-        return time.time() < (token_expiry - 300)
+        # If token is still valid (with 5-minute buffer), return True
+        if time.time() < (token_expiry - 300):
+            return True
+
+        # Token expired - attempt silent refresh
+        refresh_token = token_data.get("refresh_token")
+        if not refresh_token:
+            return False
+
+        from .oauth_client import refresh_access_token
+
+        result = refresh_access_token(refresh_token)
+
+        if result:
+            new_access_token, expires_in = result
+            # Update token file
+            token_data["access_token"] = new_access_token
+            token_data["expires_in"] = expires_in
+            token_data["token_expiry"] = time.time() + expires_in
+            TOKEN_PATH.write_text(json.dumps(token_data, indent=2))
+            return True
+
+        return False
 
     except Exception:
         return False
