@@ -22,7 +22,7 @@ class SearchResult:
     themes: list[str]
     narrative: str
     lyrics_preview: str  # First 200 chars of lyrics
-    track_id: str = ""  # Canonical track ID (Day 7)
+    track_id: str = ""  # Canonical track ID
 
     def __str__(self) -> str:
         artist_str = ", ".join(self.artists) if self.artists else "Unknown"

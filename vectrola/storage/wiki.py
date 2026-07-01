@@ -504,7 +504,7 @@ class WikiGenerator:
         The Obsidian plugin (vectrola-sync) registers a code block processor
         for ```vectrola blocks that renders the player UI.
 
-        Supports both local file and Google Drive playback (Day 7).
+        Supports both local file and Google Drive playback.
         Priority: GDrive (works cross-device) > Local file (faster, offline)
 
         Args:
